@@ -4,6 +4,7 @@ const appWindow = window.__TAURI__.window.getCurrentWindow();
 const $ = (id) => document.getElementById(id);
 
 let mods = [];
+let horseyRunning = false;
 let selectedDir = null;
 
 function setStatus(text) {
@@ -56,6 +57,7 @@ async function refresh() {
     $('game-path').textContent =
       status.game_dir ?? 'Horsey Game was not found in your Steam libraries.';
     mods = status.mods;
+    horseyRunning = status.horsey_running;
     if (!mods.some((m) => m.dir === selectedDir)) selectedDir = null;
     renderMods();
     setStatus('Ready');
@@ -288,7 +290,7 @@ $('btn-browse-refresh').addEventListener('click', loadRemote);
 
 async function offerShim() {
   const shim = mods.find((m) => m.folder === 'version.dll');
-  if (!shim || shim.state === 'Installed') return;
+  if (!shim || shim.state === 'Installed' || horseyRunning) return;
   const question =
     shim.state === 'Other version.dll'
       ? 'Mods need the Horsey shim, and a different version.dll is in the game folder. ' +
@@ -311,7 +313,7 @@ invoke('update_shim')
   .then(() => '', (err) => String(err))
   .then(async (shimError) => {
     await refresh();
-    if (shimError) setStatus(`Shim update failed: ${shimError}`);
     await offerShim();
-  })
-  .then(loadRemote);
+    await loadRemote();
+    if (shimError) setStatus(`Shim update failed: ${shimError}`);
+  });

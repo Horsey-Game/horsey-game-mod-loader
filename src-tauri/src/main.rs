@@ -23,6 +23,7 @@ struct ModRow {
 struct Status {
     game_dir: Option<String>,
     mods: Vec<ModRow>,
+    horsey_running: bool,
 }
 
 fn find_game() -> Option<PathBuf> {
@@ -85,7 +86,7 @@ fn read_mod(dir: &Path) -> ModRow {
 #[tauri::command]
 fn load_status() -> Status {
     let Some(game) = find_game() else {
-        return Status { game_dir: None, mods: Vec::new() };
+        return Status { game_dir: None, mods: Vec::new(), horsey_running: horsey_running() };
     };
     let mut mods: Vec<ModRow> = fs::read_dir(game.join("mods"))
         .map(|entries| {
@@ -111,6 +112,7 @@ fn load_status() -> Status {
     Status {
         game_dir: Some(game.display().to_string()),
         mods,
+        horsey_running: horsey_running(),
     }
 }
 
