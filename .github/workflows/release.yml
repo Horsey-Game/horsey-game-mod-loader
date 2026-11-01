@@ -21,23 +21,27 @@ jobs:
         with:
           workspace: src-tauri
 
-      - name: Build
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build installer
         working-directory: src-tauri
-        run: cargo build --release --locked
+        run: cargo tauri build
 
       - name: Package
         shell: pwsh
         run: |
-          Copy-Item src-tauri/target/release/horsey-mod-manager.exe horsey-mod-manager.exe
-          $hash = (Get-FileHash horsey-mod-manager.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  horsey-mod-manager.exe" | Set-Content -Encoding ascii horsey-mod-manager.exe.sha256
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe' | Select-Object -First 1
+          Copy-Item $setup.FullName horsey-mod-manager-setup.exe
+          $hash = (Get-FileHash horsey-mod-manager-setup.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  horsey-mod-manager-setup.exe" | Set-Content -Encoding ascii horsey-mod-manager-setup.exe.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: horsey-mod-manager
           path: |
-            horsey-mod-manager.exe
-            horsey-mod-manager.exe.sha256
+            horsey-mod-manager-setup.exe
+            horsey-mod-manager-setup.exe.sha256
 
   release:
     needs: build
@@ -53,5 +57,5 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            horsey-mod-manager.exe
-            horsey-mod-manager.exe.sha256
+            horsey-mod-manager-setup.exe
+            horsey-mod-manager-setup.exe.sha256
