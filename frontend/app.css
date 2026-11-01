@@ -1,0 +1,142 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: silver;
+}
+
+.app-window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  box-sizing: border-box;
+}
+
+.title-icon {
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+.app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin: 8px;
+}
+
+.game-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  min-width: 0;
+}
+
+.game-line span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.list-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.mod-table {
+  width: 100%;
+}
+
+.mod-table td {
+  height: 22px;
+}
+
+.col-version {
+  width: 90px;
+}
+
+.col-state {
+  width: 110px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.status-bar {
+  margin-top: 4px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.modal {
+  min-width: 300px;
+  max-width: 80vw;
+}
+
+.modal-body {
+  margin: 12px;
+}
+
+.modal-text {
+  margin: 0 0 14px;
+  word-break: break-word;
+}
+
+.modal .actions {
+  margin-top: 0;
+}
+
+.tabs {
+  margin: 0 0 8px;
+}
+
+.view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.view[hidden] {
+  display: none !important;
+}
+
+.col-author {
+  width: 120px;
+}
+
+.details {
+  margin-top: 8px;
+  min-height: 90px;
+  max-height: 120px;
+  padding: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+}

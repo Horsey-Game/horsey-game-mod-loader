@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Horsey Mod Manager</title>
+  <link rel="stylesheet" href="vendor/98.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="window app-window">
+    <div class="title-bar" data-tauri-drag-region>
+      <div class="title-bar-text" data-tauri-drag-region>
+        <img src="icons/windows_slanted-1.png" alt="" class="title-icon">
+        Horsey Mod Manager
+      </div>
+      <div class="title-bar-controls">
+        <button aria-label="Minimize" id="btn-min"></button>
+        <button aria-label="Maximize" id="btn-max"></button>
+        <button aria-label="Close" id="btn-close"></button>
+      </div>
+    </div>
+
+    <div class="window-body app-body">
+      <p class="game-line">
+        <img src="icons/directory_open_file_mydocs-4.png" alt="" class="game-icon">
+        <span id="game-path">Looking for Horsey Game...</span>
+      </p>
+
+      <menu role="tablist" class="tabs">
+        <li role="tab" id="tab-installed" aria-selected="true"><a href="#" data-view="installed">Installed</a></li>
+        <li role="tab" id="tab-browse" aria-selected="false"><a href="#" data-view="browse">Browse</a></li>
+      </menu>
+
+      <div class="view" id="view-installed">
+        <div class="sunken-panel list-panel">
+          <table class="interactive mod-table">
+            <thead>
+              <tr>
+                <th class="col-name">Name</th>
+                <th class="col-version">Version</th>
+                <th class="col-state">State</th>
+              </tr>
+            </thead>
+            <tbody id="mod-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="actions">
+          <button id="btn-toggle" class="default" disabled>Enable / Disable</button>
+          <button id="btn-remove" disabled>Uninstall</button>
+          <button id="btn-vanilla">Back to Vanilla</button>
+          <button id="btn-refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="view" id="view-browse" hidden>
+        <div class="sunken-panel list-panel">
+          <table class="interactive mod-table">
+            <thead>
+              <tr>
+                <th class="col-name">Name</th>
+                <th class="col-version">Version</th>
+                <th class="col-author">Author</th>
+                <th class="col-state">Status</th>
+              </tr>
+            </thead>
+            <tbody id="remote-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="sunken-panel details" id="remote-details">Select a mod to see its details.</div>
+
+        <div class="actions">
+          <button id="btn-install" class="default" disabled>Install</button>
+          <button id="btn-browse-refresh">Refresh List</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <p class="status-bar-field" id="status-text">Ready</p>
+      <p class="status-bar-field" id="status-count">0 mods</p>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="confirm-modal" hidden>
+    <div class="window modal">
+      <div class="title-bar">
+        <div class="title-bar-text">Horsey Mod Manager</div>
+      </div>
+      <div class="window-body modal-body">
+        <p class="modal-text" id="confirm-text"></p>
+        <div class="actions">
+          <button id="confirm-ok" class="default">OK</button>
+          <button id="confirm-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
