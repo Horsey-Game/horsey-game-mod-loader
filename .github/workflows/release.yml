@@ -21,6 +21,16 @@ jobs:
         with:
           workspace: src-tauri
 
+      - name: Fetch the latest shim from the mod server
+        shell: pwsh
+        run: |
+          $index = Invoke-RestMethod -Uri 'https://mods.badasswizard.boats/index.json'
+          $shim = $index.shim
+          Invoke-WebRequest -UseBasicParsing -Uri $shim.download_url -OutFile src-tauri/resources/version.dll
+          if ((Get-Item src-tauri/resources/version.dll).Length -ne $shim.size) { throw 'shim size does not match the mod list' }
+          $hash = (Get-FileHash src-tauri/resources/version.dll -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $shim.sha256.ToLower()) { throw 'shim checksum does not match the mod list' }
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 

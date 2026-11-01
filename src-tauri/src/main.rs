@@ -114,14 +114,16 @@ fn load_status() -> Status {
     }
 }
 
+fn mod_folder(game: &Path, dir: &str) -> Option<PathBuf> {
+    let mods = fs::canonicalize(game.join("mods")).ok()?;
+    let target = fs::canonicalize(dir).ok()?;
+    (target != mods && target.starts_with(&mods)).then_some(target)
+}
+
 #[tauri::command]
 fn toggle_mod(dir: String) -> Result<(), String> {
     let game = find_game().ok_or("Horsey Game was not found")?;
-    let mods_dir = game.join("mods");
-    let target = PathBuf::from(&dir);
-    if !target.starts_with(&mods_dir) {
-        return Err("That folder is not inside the Horsey mods folder".into());
-    }
+    let target = mod_folder(&game, &dir).ok_or("That folder is not inside the Horsey mods folder")?;
     let manifest = target.join("manifest.json");
     let disabled = target.join("manifest.json.disabled");
     let result = if manifest.exists() {
@@ -413,7 +415,7 @@ async fn update_shim() -> Result<(), String> {
         }
         _ => {}
     }
-    if !entry.download_url.starts_with(MOD_SERVER) {
+    if !from_mod_server(&entry.download_url) {
         return Err("SHIM download URL is not from the mod server".into());
     }
     if entry.size > MAX_DOWNLOAD_BYTES {
@@ -464,17 +466,18 @@ fn install_shim() -> Result<(), String> {
 #[tauri::command]
 fn uninstall_mod(dir: String) -> Result<(), String> {
     let game = find_game().ok_or("Horsey Game was not found")?;
-    let mods_dir = game.join("mods");
-    let target = PathBuf::from(&dir);
-    if target == mods_dir || !target.starts_with(&mods_dir) {
-        return Err("That folder is not inside the Horsey mods folder".into());
-    }
+    let target = mod_folder(&game, &dir).ok_or("That folder is not inside the Horsey mods folder")?;
     backup_game(&game)?;
     fs::remove_dir_all(&target).map_err(|e| e.to_string())
 }
 
-const MOD_SERVER: &str = "https://mods.badasswizard.boats";
 const INDEX_URL: &str = "https://mods.badasswizard.boats/index.json";
+
+fn from_mod_server(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .map(|u| u.scheme() == "https" && u.host_str() == Some("mods.badasswizard.boats"))
+        .unwrap_or(false)
+}
 
 #[derive(Serialize, serde::Deserialize, Clone)]
 struct RemoteMod {
@@ -581,7 +584,7 @@ async fn load_index() -> Result<IndexFile, String> {
 async fn install_remote(url: String, sha256: String, size: u64, overwrite: bool) -> Result<Installed, String> {
     use sha2::{Digest, Sha256};
 
-    if !url.starts_with(MOD_SERVER) {
+    if !from_mod_server(&url) {
         return Err("download URL is not from the mod server".into());
     }
     if size > MAX_DOWNLOAD_BYTES {
