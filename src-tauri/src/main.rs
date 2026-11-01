@@ -389,9 +389,6 @@ async fn update_shim() -> Result<(), String> {
     use sha2::{Digest, Sha256};
 
     let game = find_game().ok_or("Horsey Game was not found")?;
-    if horsey_running() {
-        return Ok(());
-    }
     let index = match load_index().await {
         Ok(index) => index,
         Err(err) => {
@@ -421,6 +418,9 @@ async fn update_shim() -> Result<(), String> {
     }
     if entry.size > MAX_DOWNLOAD_BYTES {
         return Err("SHIM is larger than the mod manager allows, not downloading".into());
+    }
+    if horsey_running() {
+        return Err("Horsey is running. Close it and reopen the manager to install the shim".into());
     }
     let bytes = http().get(&entry.download_url).send()
         .await

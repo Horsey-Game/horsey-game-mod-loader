@@ -308,7 +308,10 @@ async function offerShim() {
 }
 
 invoke('update_shim')
-  .catch(() => {})
-  .then(refresh)
-  .then(offerShim)
+  .then(() => '', (err) => String(err))
+  .then(async (shimError) => {
+    await refresh();
+    if (shimError) setStatus(`Shim update failed: ${shimError}`);
+    await offerShim();
+  })
   .then(loadRemote);
