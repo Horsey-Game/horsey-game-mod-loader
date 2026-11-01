@@ -393,6 +393,9 @@ async fn update_shim() -> Result<(), String> {
         Ok(index) => index,
         Err(err) => {
             if shim_state(&game) == "Not installed" {
+                if horsey_running() {
+                    return Err("Horsey is running. Close it and reopen the manager to install the shim".into());
+                }
                 ensure_shim(&game)?;
             }
             return Err(err);
