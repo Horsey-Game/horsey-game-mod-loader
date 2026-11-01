@@ -1,4 +1,4 @@
-﻿# horsey game mod loader
+# horsey game mod loader
 
 this is the repo for the horsey game mod loader. the mod manager app the mod server and the shim
 
@@ -57,3 +57,13 @@ the app only loads the mod list if it is signed with an ed25519 key. the public 
 ## status
 
 hobby project so expect rough edges
+
+## credits
+
+thanks to everyone who helped with this
+
+- Kars for the icons and support
+- bwhatsonn for ideas
+- JumboDS64 for ideas. check out his game Cain Iddo Break Week https://store.steampowered.com/app/4068390/Cain_Iddo_Break_Week/
+- cpt2angry for ideas
+- everyone in the horsey game discord server
