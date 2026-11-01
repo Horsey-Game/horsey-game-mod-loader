@@ -1,14 +1,11 @@
 # horsey game mod loader
 
-this is the repo for the horsey game mod loader. the mod manager app the mod server and the shim
+this is the repo for the horsey game mod loader, the windows mod manager app. the mod server and the shim live in their own repos
 
-its split into three branches
+- [horsey-mod-server](https://github.com/Horsey-Game/horsey-mod-server) the scripts that run the mod server and sign the mod list
+- [horsey-shim](https://github.com/Horsey-Game/horsey-shim) the version.dll proxy and lua runtime that actually runs the mods in the game
 
-- **manager** the windows app (tauri 2 with a win98 style ui). this is the branch you are on
-- **server** the scripts that run the mod server and sign the mod list
-- **shim** the version.dll proxy and lua runtime that actually runs the mods in the game
-
-all three branches are gpl-3.0 see LICENSE
+this repo is gpl-3.0 see LICENSE
 
 ## what the mod manager does
 
@@ -19,7 +16,7 @@ all three branches are gpl-3.0 see LICENSE
 - checks the signature on the mod list before loading it so a tampered list gets refused
 - installs and updates the shim from the mod server on launch, checked against the signed list
 
-the game is modded through the shim. the app downloads the latest build from the mod server when it starts. it also keeps a copy in src-tauri/resources/version.dll for when the server cant be reached and nothing is installed yet. the source for that build is on the shim branch
+the game is modded through the shim. the app downloads the latest build from the mod server when it starts. it also keeps a copy in src-tauri/resources/version.dll for when the server cant be reached and nothing is installed yet. the source for that build is in the horsey-shim repo
 
 ## mod format
 
@@ -53,7 +50,7 @@ the exe ends up in src-tauri/target/release
 
 ## the mod list signature
 
-the app only loads the mod list if it is signed with an ed25519 key. the public key is in src-tauri/src/main.rs. the private key never goes in this repo. the server branch has the signing scripts
+the app only loads the mod list if it is signed with an ed25519 key. the public key is in src-tauri/src/main.rs. the private key never goes in any repo. the signing scripts are in the horsey-mod-server repo
 
 ## status
 
