@@ -155,18 +155,15 @@ fn shim_state(game: &Path) -> &'static str {
     }
 }
 
-// The SHIM downloaded from the mod server last time, if any.
 fn shim_cache() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .map(|dir| PathBuf::from(dir).join("HorseyModManager").join("shim").join("version.dll"))
 }
 
-// True for the built-in SHIM or the one downloaded before. Anything else is some other version.dll.
 fn is_our_shim(bytes: &[u8]) -> bool {
     bytes == SHIM_DLL || shim_cache().and_then(|p| fs::read(p).ok()).is_some_and(|c| c == bytes)
 }
 
-// The newest SHIM we have: the downloaded one, or the copy built into the app.
 fn shim_bytes() -> Vec<u8> {
     shim_cache().and_then(|p| fs::read(p).ok()).unwrap_or_else(|| SHIM_DLL.to_vec())
 }
@@ -387,7 +384,6 @@ fn restore_vanilla() -> Result<(), String> {
     Ok(())
 }
 
-// Runs on launch. Installs or updates the SHIM from the signed mod list. A version.dll that is not ours is left alone, so the app can ask about it.
 #[tauri::command]
 async fn update_shim() -> Result<(), String> {
     use sha2::{Digest, Sha256};
@@ -396,7 +392,6 @@ async fn update_shim() -> Result<(), String> {
     let index = match load_index().await {
         Ok(index) => index,
         Err(err) => {
-            // offline: fill in a missing SHIM from the built-in copy, but never replace one
             if shim_state(&game) == "Not installed" {
                 ensure_shim(&game)?;
             }
