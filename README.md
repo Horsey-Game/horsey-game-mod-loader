@@ -1,13 +1,14 @@
-﻿# horsey-mods
+﻿# horsey game mod loader
 
-this is the repo for the horsey game mod manager and the mod server
+this is the repo for the horsey game mod loader. the mod manager app the mod server and the shim
 
-its split into two branches
+its split into three branches
 
 - **manager** the windows app (tauri 2 with a win98 style ui). this is the branch you are on
 - **server** the scripts that run the mod server and sign the mod list
+- **shim** the version.dll proxy and lua runtime that actually runs the mods in the game
 
-both branches are gpl-3.0 see LICENSE
+all three branches are gpl-3.0 see LICENSE
 
 ## what the mod manager does
 
@@ -17,7 +18,7 @@ both branches are gpl-3.0 see LICENSE
 - backs up the game folder before any change so you can always go back to vanilla
 - checks the signature on the mod list before loading it so a tampered list gets refused
 
-the game is modded through a version.dll shim with a lua runtime. the shim is bundled inside the app so you dont need to get it separately.
+the game is modded through the shim. the app bundles a build of it in src-tauri/resources/version.dll so you dont need to get it separately. the source for that build is on the shim branch
 
 ## mod format
 
@@ -55,4 +56,4 @@ the app only loads the mod list if it is signed with an ed25519 key. the public 
 
 ## status
 
-personal project so expect rough edges
+hobby project so expect rough edges
