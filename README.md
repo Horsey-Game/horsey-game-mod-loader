@@ -17,8 +17,9 @@ all three branches are gpl-3.0 see LICENSE
 - turns mods on and off without deleting them
 - backs up the game folder before any change so you can always go back to vanilla
 - checks the signature on the mod list before loading it so a tampered list gets refused
+- installs and updates the shim from the mod server on launch, checked against the signed list
 
-the game is modded through the shim. the app bundles a build of it in src-tauri/resources/version.dll so you dont need to get it separately. the source for that build is on the shim branch
+the game is modded through the shim. the app downloads the latest build from the mod server when it starts. it also keeps a copy in src-tauri/resources/version.dll for when the server cant be reached and nothing is installed yet. the source for that build is on the shim branch
 
 ## mod format
 

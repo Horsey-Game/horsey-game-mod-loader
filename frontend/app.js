@@ -307,4 +307,8 @@ async function offerShim() {
   }
 }
 
-refresh().then(offerShim).then(loadRemote);
+invoke('update_shim')
+  .catch(() => {})
+  .then(refresh)
+  .then(offerShim)
+  .then(loadRemote);

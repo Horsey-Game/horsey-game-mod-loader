@@ -146,16 +146,32 @@ struct Installed {
 fn shim_state(game: &Path) -> &'static str {
     match fs::read(game.join("version.dll")) {
         Err(_) => "Not installed",
-        Ok(bytes) if bytes == SHIM_DLL => "Installed",
+        Ok(bytes) if is_our_shim(&bytes) => "Installed",
         Ok(_) => "Other version.dll",
     }
+}
+
+// The SHIM downloaded from the mod server last time, if any.
+fn shim_cache() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|dir| PathBuf::from(dir).join("HorseyModManager").join("shim").join("version.dll"))
+}
+
+// True for the built-in SHIM or the one downloaded before. Anything else is some other version.dll.
+fn is_our_shim(bytes: &[u8]) -> bool {
+    bytes == SHIM_DLL || shim_cache().and_then(|p| fs::read(p).ok()).is_some_and(|c| c == bytes)
+}
+
+// The newest SHIM we have: the downloaded one, or the copy built into the app.
+fn shim_bytes() -> Vec<u8> {
+    shim_cache().and_then(|p| fs::read(p).ok()).unwrap_or_else(|| SHIM_DLL.to_vec())
 }
 
 fn ensure_shim(game: &Path) -> Result<bool, String> {
     if shim_state(game) == "Installed" {
         return Ok(false);
     }
-    fs::write(game.join("version.dll"), SHIM_DLL).map_err(|e| {
+    fs::write(game.join("version.dll"), shim_bytes()).map_err(|e| {
         format!("could not write version.dll (is Horsey still running?): {e}")
     })?;
     Ok(true)
@@ -367,6 +383,70 @@ fn restore_vanilla() -> Result<(), String> {
     Ok(())
 }
 
+// Runs on launch. Installs or updates the SHIM from the signed mod list. A version.dll that is not ours is left alone, so the app can ask about it.
+#[tauri::command]
+async fn update_shim() -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    if horsey_running() {
+        return Ok(());
+    }
+    let index = match load_index().await {
+        Ok(index) => index,
+        Err(err) => {
+            // offline: fill in a missing SHIM from the built-in copy, but never replace one
+            if shim_state(&game) == "Not installed" {
+                ensure_shim(&game)?;
+            }
+            return Err(err);
+        }
+    };
+    let Some(entry) = index.shim else {
+        return Ok(());
+    };
+    match shim_state(&game) {
+        "Other version.dll" => return Ok(()),
+        "Installed" => {
+            let installed = fs::read(game.join("version.dll")).map_err(|e| e.to_string())?;
+            let hash: String = Sha256::digest(&installed).iter().map(|b| format!("{b:02x}")).collect();
+            if hash == entry.sha256.to_lowercase() {
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
+    if !entry.download_url.starts_with(MOD_SERVER) {
+        return Err("SHIM download URL is not from the mod server".into());
+    }
+    if entry.size > MAX_DOWNLOAD_BYTES {
+        return Err("SHIM is larger than the mod manager allows, not downloading".into());
+    }
+    let bytes = http().get(&entry.download_url).send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 != entry.size {
+        return Err("SHIM size does not match the mod list, not installing".into());
+    }
+    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if actual != entry.sha256.to_lowercase() {
+        return Err("SHIM checksum does not match the mod list, not installing".into());
+    }
+    let cache = shim_cache().ok_or("could not find the local app data folder")?;
+    if let Some(dir) = cache.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    fs::write(&cache, &bytes).map_err(|e| e.to_string())?;
+    fs::write(game.join("version.dll"), &bytes)
+        .map_err(|e| format!("could not write version.dll (is Horsey still running?): {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn install_shim() -> Result<(), String> {
     if horsey_running() {
@@ -414,7 +494,16 @@ struct RemoteMod {
 struct IndexFile {
     #[serde(default)]
     sequence: u64,
+    #[serde(default)]
+    shim: Option<ShimEntry>,
     mods: Vec<RemoteMod>,
+}
+
+#[derive(serde::Deserialize)]
+struct ShimEntry {
+    sha256: String,
+    size: u64,
+    download_url: String,
 }
 
 const INDEX_PUBLIC_KEY_HEX: &str =
@@ -436,6 +525,10 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 #[tauri::command]
 async fn fetch_index() -> Result<Vec<RemoteMod>, String> {
+    Ok(load_index().await?.mods)
+}
+
+async fn load_index() -> Result<IndexFile, String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let index_bytes = http().get(INDEX_URL).send()
@@ -481,7 +574,7 @@ async fn fetch_index() -> Result<Vec<RemoteMod>, String> {
             let _ = fs::write(&file, index.sequence.to_string());
         }
     }
-    Ok(index.mods)
+    Ok(index)
 }
 
 #[tauri::command]
@@ -533,7 +626,8 @@ fn main() {
             restore_vanilla,
             install_shim,
             fetch_index,
-            install_remote
+            install_remote,
+            update_shim
         ])
         .run(tauri::generate_context!())
         .expect("error while running Horsey Mod Manager");
