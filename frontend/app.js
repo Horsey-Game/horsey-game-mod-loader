@@ -286,4 +286,25 @@ document.querySelectorAll('.tabs a').forEach((a) => {
 $('btn-install').addEventListener('click', installSelectedRemote);
 $('btn-browse-refresh').addEventListener('click', loadRemote);
 
-refresh().then(loadRemote);
+async function offerShim() {
+  const shim = mods.find((m) => m.folder === 'version.dll');
+  if (!shim || shim.state === 'Installed') return;
+  const question =
+    shim.state === 'Other version.dll'
+      ? 'Mods need the Horsey shim, and a different version.dll is in the game folder. ' +
+        'Replace it with the shim? A backup of the game folder is made first.'
+      : 'Mods need the Horsey shim, and it is not installed yet. Install it now?';
+  if (!(await askConfirm(question))) {
+    setStatus('Shim not installed. Mods will not load until it is.');
+    return;
+  }
+  try {
+    await invoke('install_shim');
+    await refresh();
+    setStatus('Shim installed');
+  } catch (err) {
+    setStatus(String(err));
+  }
+}
+
+refresh().then(offerShim).then(loadRemote);

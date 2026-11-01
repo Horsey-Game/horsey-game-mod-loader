@@ -368,6 +368,20 @@ fn restore_vanilla() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn install_shim() -> Result<(), String> {
+    if horsey_running() {
+        return Err("Close Horsey first".into());
+    }
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    if shim_state(&game) == "Installed" {
+        return Ok(());
+    }
+    backup_game(&game)?;
+    ensure_shim(&game)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn uninstall_mod(dir: String) -> Result<(), String> {
     let game = find_game().ok_or("Horsey Game was not found")?;
     let mods_dir = game.join("mods");
@@ -517,6 +531,7 @@ fn main() {
             install_mod,
             uninstall_mod,
             restore_vanilla,
+            install_shim,
             fetch_index,
             install_remote
         ])
