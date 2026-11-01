@@ -243,7 +243,10 @@ fn extract(
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let Some(enclosed) = entry.enclosed_name() else {
-            return Err(format!("unsafe path in zip: {}", entry.name()));
+            return Err(format!(
+                "unsafe path in zip: {}",
+                entry.name().map(|n| n.to_string()).unwrap_or_default()
+            ));
         };
         let Ok(rel) = enclosed.strip_prefix(prefix) else {
             continue;
@@ -281,7 +284,12 @@ fn install_mod(zip_path: String, overwrite: bool) -> Result<Installed, String> {
 
     let mut prefix: Option<String> = None;
     for i in 0..archive.len() {
-        let name = archive.by_index(i).map_err(|e| e.to_string())?.name().to_string();
+        let name = archive
+            .by_index(i)
+            .map_err(|e| e.to_string())?
+            .name()
+            .map_err(|e| e.to_string())?
+            .to_string();
         if name == "manifest.json" {
             prefix = Some(String::new());
             break;
@@ -581,12 +589,20 @@ async fn load_index() -> Result<IndexFile, String> {
 }
 
 #[tauri::command]
-async fn install_remote(url: String, sha256: String, size: u64, overwrite: bool) -> Result<Installed, String> {
+async fn install_remote(url: String, overwrite: bool) -> Result<Installed, String> {
     use sha2::{Digest, Sha256};
 
     if !from_mod_server(&url) {
         return Err("download URL is not from the mod server".into());
     }
+    let index = load_index().await?;
+    let listed = index
+        .mods
+        .iter()
+        .find(|m| m.download_url == url)
+        .ok_or("that mod is not in the signed mod list")?;
+    let sha256 = listed.sha256.clone();
+    let size = listed.size;
     if size > MAX_DOWNLOAD_BYTES {
         return Err("mod is larger than the mod manager allows, not downloading".into());
     }
@@ -612,8 +628,19 @@ async fn install_remote(url: String, sha256: String, size: u64, overwrite: bool)
     if actual != sha256.to_lowercase() {
         return Err("checksum does not match the index, not installing".into());
     }
-    let path = std::env::temp_dir().join(format!("horsey-download-{actual}.zip"));
-    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("horsey-download-{}-{nonce}.zip", std::process::id()));
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        std::io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
+    }
     let result = install_mod(path.display().to_string(), overwrite);
     let _ = fs::remove_file(&path);
     result

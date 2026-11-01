@@ -137,6 +137,9 @@ function askConfirm(message) {
 
 async function installZip(path) {
   const file = path.split(/[\\/]/).pop();
+  if (!(await askConfirm(`${file} can run code inside Horsey. Only install mods you trust. Install it?`))) {
+    return `${file}: install cancelled`;
+  }
   try {
     const result = await invoke('install_mod', { zipPath: path, overwrite: false });
     const shim = result.shim_installed ? ' (shim installed)' : '';
@@ -251,7 +254,7 @@ async function loadRemote() {
 
 async function installRemoteMod(mod) {
   const isUpdate = remoteStatus(mod) === 'Update available';
-  const args = { url: mod.download_url, sha256: mod.sha256, size: mod.size, overwrite: isUpdate };
+  const args = { url: mod.download_url, overwrite: isUpdate };
   try {
     const result = await invoke('install_remote', args);
     const shim = result.shim_installed ? ' (shim installed)' : '';
