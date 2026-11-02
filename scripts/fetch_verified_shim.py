@@ -18,7 +18,8 @@ MAX_BYTES = 50 * 1024 * 1024
 
 def fetch(url):
     # liest höchstens MAX_BYTES + 1, damit eine zu große datei auffällt
-    with urllib.request.urlopen(url, timeout=60) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": "HorseyModManager/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
         return resp.read(MAX_BYTES + 1)
 
 
