@@ -151,8 +151,15 @@ fn shim_state(game: &Path) -> &'static str {
     match fs::read(game.join("version.dll")) {
         Err(_) => "Not installed",
         Ok(bytes) if is_our_shim(&bytes) => "Installed",
+        // horsey-shim, aber nicht die gerade bekannte version
+        Ok(bytes) if is_horsey_shim(&bytes) => "Shim update",
         Ok(_) => "Other version.dll",
     }
+}
+
+// marker aus dem konsolen-banner, so erkennen wir jede horsey-shim-version
+fn is_horsey_shim(bytes: &[u8]) -> bool {
+    bytes.windows(11).any(|w| w == b"Horsey Shim")
 }
 
 fn shim_cache() -> Option<PathBuf> {
@@ -169,7 +176,8 @@ fn shim_bytes() -> Vec<u8> {
 }
 
 fn ensure_shim(game: &Path) -> Result<bool, String> {
-    if shim_state(game) == "Installed" {
+    // eine horsey-shim nie still überschreiben
+    if matches!(shim_state(game), "Installed" | "Shim update") {
         return Ok(false);
     }
     fs::write(game.join("version.dll"), shim_bytes()).map_err(|e| {
@@ -393,7 +401,7 @@ fn restore_vanilla() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn update_shim() -> Result<(), String> {
+async fn update_shim(force: bool) -> Result<(), String> {
     use sha2::{Digest, Sha256};
 
     let game = find_game().ok_or("Horsey Game was not found")?;
@@ -412,16 +420,10 @@ async fn update_shim() -> Result<(), String> {
     let Some(entry) = index.shim else {
         return Ok(());
     };
-    match shim_state(&game) {
-        "Other version.dll" => return Ok(()),
-        "Installed" => {
-            let installed = fs::read(game.join("version.dll")).map_err(|e| e.to_string())?;
-            let hash: String = Sha256::digest(&installed).iter().map(|b| format!("{b:02x}")).collect();
-            if hash == entry.sha256.to_lowercase() {
-                return Ok(());
-            }
-        }
-        _ => {}
+    let state = shim_state(&game);
+    // automatisch nur bei fehlender shim, updates nur mit force aus dem popup
+    if state == "Other version.dll" || (!force && state != "Not installed") {
+        return Ok(());
     }
     if !from_mod_server(&entry.download_url) {
         return Err("SHIM download URL is not from the mod server".into());
@@ -431,6 +433,10 @@ async fn update_shim() -> Result<(), String> {
     }
     if horsey_running() {
         return Err("Horsey is running. Close it and reopen the manager to install the shim".into());
+    }
+    // vor dem überschreiben sichern
+    if force {
+        backup_game(&game)?;
     }
     let bytes = http().get(&entry.download_url).send()
         .await
@@ -507,6 +513,9 @@ struct IndexFile {
     sequence: u64,
     #[serde(default)]
     shim: Option<ShimEntry>,
+    // neue manager-version, fehlt bei alten listen
+    #[serde(default)]
+    manager: Option<ManagerEntry>,
     mods: Vec<RemoteMod>,
 }
 
@@ -515,6 +524,30 @@ struct ShimEntry {
     sha256: String,
     size: u64,
     download_url: String,
+}
+
+// eintrag für ein manager-update aus der signierten liste
+#[derive(serde::Deserialize)]
+struct ManagerEntry {
+    version: String,
+    sha256: String,
+    size: u64,
+    download_url: String,
+}
+
+// was das popup braucht: neue und aktuelle version
+#[derive(serde::Serialize)]
+struct ManagerUpdate {
+    version: String,
+    current: String,
+}
+
+// vergleicht versionen zahlenweise, z.b. 0.1.10 ist neuer als 0.1.9
+fn version_newer(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u64> {
+        v.split('.').map(|p| p.trim().parse().unwrap_or(0)).collect()
+    };
+    parse(a) > parse(b)
 }
 
 const INDEX_PUBLIC_KEY_HEX: &str =
@@ -646,6 +679,88 @@ async fn install_remote(url: String, overwrite: bool) -> Result<Installed, Strin
     result
 }
 
+#[tauri::command]
+async fn shim_update_available() -> Result<bool, String> {
+    use sha2::{Digest, Sha256};
+
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    let index = load_index().await?;
+    let Some(entry) = index.shim else {
+        return Ok(false);
+    };
+    let state = shim_state(&game);
+    if state != "Installed" && state != "Shim update" {
+        return Ok(false);
+    }
+    let installed = fs::read(game.join("version.dll")).map_err(|e| e.to_string())?;
+    let hash: String = Sha256::digest(&installed).iter().map(|b| format!("{b:02x}")).collect();
+    // anderer hash heißt: update verfügbar
+    if hash != entry.sha256.to_lowercase() {
+        return Ok(true);
+    }
+    // gleiche version wie die liste, also als installiert merken
+    if state == "Shim update" {
+        if let Some(cache) = shim_cache() {
+            if let Some(dir) = cache.parent() {
+                fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            fs::write(&cache, &installed).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(false)
+}
+
+// nur anbieten wenn die signierte liste eine neuere version hat
+#[tauri::command]
+async fn manager_update_available() -> Result<Option<ManagerUpdate>, String> {
+    let index = load_index().await?;
+    let Some(entry) = index.manager else {
+        return Ok(None);
+    };
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    if version_newer(&entry.version, &current) {
+        Ok(Some(ManagerUpdate { version: entry.version, current }))
+    } else {
+        Ok(None)
+    }
+}
+
+// installer laden, prüfen, starten und danach den manager beenden
+#[tauri::command]
+async fn apply_manager_update() -> Result<(), String> {
+    use sha2::{Digest, Sha256};
+
+    let index = load_index().await?;
+    let entry = index.manager.ok_or("no manager update in the mod list")?;
+    if !from_mod_server(&entry.download_url) {
+        return Err("manager download URL is not from the mod server".into());
+    }
+    if entry.size > MAX_DOWNLOAD_BYTES {
+        return Err("manager installer is larger than the mod manager allows".into());
+    }
+    let bytes = http().get(&entry.download_url).send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+    // größe und hash müssen zur signierten liste passen
+    if bytes.len() as u64 != entry.size {
+        return Err("manager installer size does not match the mod list, not installing".into());
+    }
+    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if actual != entry.sha256.to_lowercase() {
+        return Err("manager installer checksum does not match the mod list, not installing".into());
+    }
+    let path = std::env::temp_dir().join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    std::process::Command::new(&path).spawn().map_err(|e| e.to_string())?;
+    // manager beenden, damit der installer die exe ersetzen kann
+    std::process::exit(0)
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -657,7 +772,10 @@ fn main() {
             install_shim,
             fetch_index,
             install_remote,
-            update_shim
+            update_shim,
+            shim_update_available,
+            manager_update_available,
+            apply_manager_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running Horsey Mod Manager");

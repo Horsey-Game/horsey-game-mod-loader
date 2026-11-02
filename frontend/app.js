@@ -293,7 +293,30 @@ $('btn-browse-refresh').addEventListener('click', loadRemote);
 
 async function offerShim() {
   const shim = mods.find((m) => m.folder === 'version.dll');
-  if (!shim || shim.state === 'Installed' || horseyRunning) return;
+  if (!shim || horseyRunning) return;
+  // update-popup nur wenn die liste eine neuere shim hat
+  if (shim.state === 'Installed' || shim.state === 'Shim update') {
+    let available = false;
+    try {
+      available = await invoke('shim_update_available');
+    } catch (err) {
+      setStatus(String(err));
+      return;
+    }
+    if (!available) return;
+    if (!(await askConfirm('A new Horsey shim is available. Update to it? A backup of the game folder is made first.'))) {
+      setStatus('Shim update skipped.');
+      return;
+    }
+    try {
+      await invoke('update_shim', { force: true });
+      await refresh();
+      setStatus('Shim updated');
+    } catch (err) {
+      setStatus(String(err));
+    }
+    return;
+  }
   const question =
     shim.state === 'Other version.dll'
       ? 'Mods need the Horsey shim, and a different version.dll is in the game folder. ' +
@@ -312,11 +335,35 @@ async function offerShim() {
   }
 }
 
-invoke('update_shim')
+// manager-update anbieten, aber nie erzwingen
+async function offerManagerUpdate() {
+  let update = null;
+  try {
+    update = await invoke('manager_update_available');
+  } catch (err) {
+    return;
+  }
+  if (!update) return;
+  const question =
+    `Version ${update.version} of the mod manager is available. You have ${update.current}. ` +
+    'Update now? The manager closes and the installer opens.';
+  if (!(await askConfirm(question))) {
+    setStatus('Manager update skipped.');
+    return;
+  }
+  try {
+    await invoke('apply_manager_update');
+  } catch (err) {
+    setStatus(String(err));
+  }
+}
+
+invoke('update_shim', { force: false })
   .then(() => '', (err) => String(err))
   .then(async (shimError) => {
     await refresh();
     await offerShim();
+    await offerManagerUpdate();
     await loadRemote();
     if (shimError) setStatus(`Shim update failed: ${shimError}`);
   });
