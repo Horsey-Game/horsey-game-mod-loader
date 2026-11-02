@@ -741,16 +741,44 @@ async fn apply_manager_update() -> Result<(), String> {
     let path = dir.join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
     fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     update_log(&format!("installer written to {}", path.display()));
-    match std::process::Command::new(&path).spawn() {
-        Ok(child) => update_log(&format!("installer started, pid {}", child.id())),
-        Err(e) => {
-            update_log(&format!("installer failed to start: {e}"));
-            return Err(format!("could not start the installer: {e}"));
-        }
+    let verb = wide("runas");
+    let file = wide(&path.to_string_lossy());
+    let code = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if code <= 32 {
+        update_log(&format!("installer not started, ShellExecute returned {code}"));
+        return Err(format!(
+            "the installer did not start (code {code}). If the admin prompt was declined, run the update again and click Yes."
+        ));
     }
+    update_log(&format!("installer started elevated, ShellExecute returned {code}"));
     update_log("manager exiting for the install");
     // manager beenden, damit der installer die exe ersetzen kann
     std::process::exit(0)
+}
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[link(name = "shell32")]
+extern "system" {
+    fn ShellExecuteW(
+        hwnd: *mut std::ffi::c_void,
+        operation: *const u16,
+        file: *const u16,
+        parameters: *const u16,
+        directory: *const u16,
+        show: i32,
+    ) -> isize;
 }
 
 fn update_log(line: &str) {
