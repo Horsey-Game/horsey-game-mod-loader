@@ -1,4 +1,15 @@
-const { invoke } = window.__TAURI__.core;
+const { invoke: rawInvoke } = window.__TAURI__.core;
+const invoke = (cmd, args) =>
+  rawInvoke(cmd, args).catch((err) => {
+    rawInvoke('app_log', { line: `error ${cmd}: ${err}` }).catch(() => {});
+    throw err;
+  });
+window.addEventListener('error', (e) =>
+  rawInvoke('app_log', { line: `js error: ${e.message}` }).catch(() => {}),
+);
+window.addEventListener('unhandledrejection', (e) =>
+  rawInvoke('app_log', { line: `unhandled: ${e.reason}` }).catch(() => {}),
+);
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
 const $ = (id) => document.getElementById(id);
@@ -8,6 +19,7 @@ let horseyRunning = false;
 let selectedDir = null;
 
 function setStatus(text) {
+  rawInvoke('app_log', { line: `status: ${text}` }).catch(() => {});
   $('status-text').textContent = text;
 }
 

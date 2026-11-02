@@ -782,11 +782,15 @@ extern "system" {
 }
 
 fn update_log(line: &str) {
+    log_file("update.log", line)
+}
+
+fn log_file(name: &str, line: &str) {
     use std::io::Write;
     let Some(base) = std::env::var_os("LOCALAPPDATA") else { return };
     let dir = std::path::PathBuf::from(base).join("com.chris.horseymodmanager");
     let _ = fs::create_dir_all(&dir);
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("update.log")) {
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join(name)) {
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -795,7 +799,14 @@ fn update_log(line: &str) {
     }
 }
 
+#[tauri::command]
+fn app_log(line: String) {
+    log_file("app.log", &line);
+}
+
 fn main() {
+    std::panic::set_hook(Box::new(|info| log_file("app.log", &format!("panic: {info}"))));
+    log_file("app.log", &format!("start {}", env!("CARGO_PKG_VERSION")));
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             load_status,
@@ -809,7 +820,8 @@ fn main() {
             update_shim,
             shim_update_available,
             manager_update_available,
-            apply_manager_update
+            apply_manager_update,
+            app_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running Horsey Mod Manager");
@@ -861,4 +873,34 @@ async fn download_checked(url: &str, size: u64, sha256: &str) -> Result<Vec<u8>,
 fn sequence_file() -> Option<std::path::PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .map(|dir| std::path::PathBuf::from(dir).join("HorseyModManager").join("index_sequence.txt"))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_compare_is_numeric() {
+        assert!(version_newer("0.2.3", "0.2.2"));
+        assert!(version_newer("0.10.0", "0.9.9"));
+        assert!(!version_newer("0.2.2", "0.2.2"));
+        assert!(!version_newer("0.2.1", "0.2.2"));
+    }
+
+    #[test]
+    fn hex_decodes_pairs_only() {
+        assert_eq!(hex_decode("00ff10"), Some(vec![0x00, 0xff, 0x10]));
+        assert_eq!(hex_decode("abc"), None);
+        assert_eq!(hex_decode("zz"), None);
+    }
+
+    #[test]
+    fn download_host_must_be_https_mod_server() {
+        assert!(from_mod_server("https://mods.badasswizard.boats/files/autonamer-0.1.2.zip"));
+        assert!(!from_mod_server("http://mods.badasswizard.boats/files/autonamer-0.1.2.zip"));
+        assert!(!from_mod_server("https://mods.badasswizard.boats.example.com/files/a.zip"));
+        assert!(!from_mod_server("https://example.com/files/a.zip"));
+        assert!(!from_mod_server("not a url"));
+    }
 }
