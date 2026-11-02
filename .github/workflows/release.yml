@@ -6,45 +6,40 @@ on:
       - "v*"
   workflow_dispatch:
 
+# standard nur lesen, schreiben nur im release-job
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # muss zu INDEX_PUBLIC_KEY_HEX in src-tauri/src/main.rs passen
+  INDEX_PUBLIC_KEY_HEX: 58a9b3f690eff8f58a116e4bf309491790e8e8ee60034854a0beaed067c36f97
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # alle actions auf commit-hash festgenagelt, nicht auf tags
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspace: src-tauri
 
-      - name: Fetch the latest shim from the mod server
-        shell: pwsh
-        run: |
-          $index = Invoke-RestMethod -Uri 'https://mods.badasswizard.boats/index.json'
-          $shim = $index.shim
-          Invoke-WebRequest -UseBasicParsing -Uri $shim.download_url -OutFile src-tauri/resources/version.dll
-          if ((Get-Item src-tauri/resources/version.dll).Length -ne $shim.size) { throw 'shim size does not match the mod list' }
-          $hash = (Get-FileHash src-tauri/resources/version.dll -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $shim.sha256.ToLower()) { throw 'shim checksum does not match the mod list' }
+      - name: Install verifier dependency
+        run: python -m pip install --quiet cryptography
 
-      - name: Cache Tauri CLI
-        id: tauri-cli-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-tauri.exe
-          key: tauri-cli-2-windows
+      # shim kommt nur aus der signierten liste, erst nach der signaturprüfung
+      - name: Fetch the shim from the signed mod list
+        run: python scripts/fetch_verified_shim.py
 
       - name: Install Tauri CLI
-        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "^2" --locked
 
       - name: Build installer
         working-directory: src-tauri
-        run: cargo tauri build
+        run: cargo tauri build -- --locked
 
       - name: Package
         shell: pwsh
@@ -54,7 +49,7 @@ jobs:
           $hash = (Get-FileHash horsey-mod-manager-setup.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  horsey-mod-manager-setup.exe" | Set-Content -Encoding ascii horsey-mod-manager-setup.exe.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: horsey-mod-manager
           path: |
@@ -65,12 +60,14 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           name: horsey-mod-manager
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
           generate_release_notes: true

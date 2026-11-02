@@ -136,7 +136,7 @@ fn toggle_mod(dir: String) -> Result<(), String> {
     result.map_err(|e| e.to_string())
 }
 
-const SHIM_API_VERSION: i64 = 1;
+const SHIM_API_VERSION: i64 = 2;
 const SHIM_DLL: &[u8] = include_bytes!("../resources/version.dll");
 const BACKUPS_KEEP: usize = 5;
 
@@ -402,8 +402,6 @@ fn restore_vanilla() -> Result<(), String> {
 
 #[tauri::command]
 async fn update_shim(force: bool) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-
     let game = find_game().ok_or("Horsey Game was not found")?;
     let index = match load_index().await {
         Ok(index) => index,
@@ -425,12 +423,6 @@ async fn update_shim(force: bool) -> Result<(), String> {
     if state == "Other version.dll" || (!force && state != "Not installed") {
         return Ok(());
     }
-    if !from_mod_server(&entry.download_url) {
-        return Err("SHIM download URL is not from the mod server".into());
-    }
-    if entry.size > MAX_DOWNLOAD_BYTES {
-        return Err("SHIM is larger than the mod manager allows, not downloading".into());
-    }
     if horsey_running() {
         return Err("Horsey is running. Close it and reopen the manager to install the shim".into());
     }
@@ -438,21 +430,8 @@ async fn update_shim(force: bool) -> Result<(), String> {
     if force {
         backup_game(&game)?;
     }
-    let bytes = http().get(&entry.download_url).send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 != entry.size {
-        return Err("SHIM size does not match the mod list, not installing".into());
-    }
-    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    if actual != entry.sha256.to_lowercase() {
-        return Err("SHIM checksum does not match the mod list, not installing".into());
-    }
+    // größe und hash werden beim streamen geprüft
+    let bytes = download_checked(&entry.download_url, entry.size, &entry.sha256).await?;
     let cache = shim_cache().ok_or("could not find the local app data folder")?;
     if let Some(dir) = cache.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -554,6 +533,9 @@ const INDEX_PUBLIC_KEY_HEX: &str =
     "58a9b3f690eff8f58a116e4bf309491790e8e8ee60034854a0beaed067c36f97";
 const INDEX_SIG_URL: &str = "https://mods.badasswizard.boats/index.sig";
 
+// bei jedem manager-release hochsetzen, dann lassen sich alte listen nicht mehr einspielen
+const MIN_INDEX_SEQUENCE: u64 = 19;
+
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_EXTRACT_BYTES: u64 = 200 * 1024 * 1024;
 
@@ -603,6 +585,10 @@ async fn load_index() -> Result<IndexFile, String> {
 
     let index: IndexFile = serde_json::from_slice(&index_bytes)
         .map_err(|e| format!("mod list is not valid: {e}"))?;
+    // alte signierte listen werden auch bei neuer installation abgelehnt
+    if index.sequence < MIN_INDEX_SEQUENCE {
+        return Err("mod list is older than this manager allows, not loading it".into());
+    }
     if let Some(file) = sequence_file() {
         let last: u64 = fs::read_to_string(&file)
             .ok()
@@ -728,33 +714,21 @@ async fn manager_update_available() -> Result<Option<ManagerUpdate>, String> {
 // installer laden, prüfen, starten und danach den manager beenden
 #[tauri::command]
 async fn apply_manager_update() -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-
     let index = load_index().await?;
     let entry = index.manager.ok_or("no manager update in the mod list")?;
-    if !from_mod_server(&entry.download_url) {
-        return Err("manager download URL is not from the mod server".into());
+    // das backend prüft die version selbst, nicht nur das popup
+    if !version_newer(&entry.version, env!("CARGO_PKG_VERSION")) {
+        return Err("the mod list has no newer manager version".into());
     }
-    if entry.size > MAX_DOWNLOAD_BYTES {
-        return Err("manager installer is larger than the mod manager allows".into());
-    }
-    let bytes = http().get(&entry.download_url).send()
-        .await
+    let bytes = download_checked(&entry.download_url, entry.size, &entry.sha256).await?;
+    // jeder lauf bekommt einen neuen ordner, der nicht vorher existieren darf
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    // größe und hash müssen zur signierten liste passen
-    if bytes.len() as u64 != entry.size {
-        return Err("manager installer size does not match the mod list, not installing".into());
-    }
-    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
-    if actual != entry.sha256.to_lowercase() {
-        return Err("manager installer checksum does not match the mod list, not installing".into());
-    }
-    let path = std::env::temp_dir().join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("horsey-mm-update-{}-{nonce}", std::process::id()));
+    fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
     fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     std::process::Command::new(&path).spawn().map_err(|e| e.to_string())?;
     // manager beenden, damit der installer die exe ersetzen kann
@@ -785,8 +759,42 @@ fn main() {
 fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent("HorseyModManager/1.0")
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .expect("http client")
+}
+
+// lädt eine datei vom mod server, bricht beim überschreiten der größe ab und prüft den hash
+async fn download_checked(url: &str, size: u64, sha256: &str) -> Result<Vec<u8>, String> {
+    use sha2::{Digest, Sha256};
+
+    if !from_mod_server(url) {
+        return Err("download URL is not from the mod server".into());
+    }
+    if size > MAX_DOWNLOAD_BYTES {
+        return Err("download is larger than the mod manager allows, not downloading".into());
+    }
+    let mut resp = http().get(url).send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?;
+    let mut bytes: Vec<u8> = Vec::with_capacity(size as usize);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
+        if bytes.len() as u64 + chunk.len() as u64 > size {
+            return Err("download is larger than the mod list says, not installing".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.len() as u64 != size {
+        return Err("download size does not match the mod list, not installing".into());
+    }
+    let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if actual != sha256.to_lowercase() {
+        return Err("download checksum does not match the mod list, not installing".into());
+    }
+    Ok(bytes)
 }
 
 
