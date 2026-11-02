@@ -352,7 +352,9 @@ async function offerManagerUpdate() {
     return;
   }
   try {
-    await invoke('apply_manager_update');
+    await invoke('apply_manager_update').catch((err) => {
+    alert(`Manager update failed:\n${err}\n\nLog: %LOCALAPPDATA%\\com.chris.horseymodmanager\\update.log`);
+  });
   } catch (err) {
     setStatus(String(err));
   }

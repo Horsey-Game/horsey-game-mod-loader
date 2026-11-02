@@ -534,7 +534,7 @@ const INDEX_PUBLIC_KEY_HEX: &str =
 const INDEX_SIG_URL: &str = "https://mods.badasswizard.boats/index.sig";
 
 // bei jedem manager-release hochsetzen, dann lassen sich alte listen nicht mehr einspielen
-const MIN_INDEX_SEQUENCE: u64 = 19;
+const MIN_INDEX_SEQUENCE: u64 = 20;
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_EXTRACT_BYTES: u64 = 200 * 1024 * 1024;
@@ -720,7 +720,17 @@ async fn apply_manager_update() -> Result<(), String> {
     if !version_newer(&entry.version, env!("CARGO_PKG_VERSION")) {
         return Err("the mod list has no newer manager version".into());
     }
-    let bytes = download_checked(&entry.download_url, entry.size, &entry.sha256).await?;
+    update_log(&format!("update to {} requested", entry.version));
+    let bytes = match download_checked(&entry.download_url, entry.size, &entry.sha256).await {
+        Ok(b) => {
+            update_log(&format!("download ok, {} bytes", b.len()));
+            b
+        }
+        Err(e) => {
+            update_log(&format!("download failed: {e}"));
+            return Err(e);
+        }
+    };
     // jeder lauf bekommt einen neuen ordner, der nicht vorher existieren darf
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -730,9 +740,31 @@ async fn apply_manager_update() -> Result<(), String> {
     fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
     fs::write(&path, &bytes).map_err(|e| e.to_string())?;
-    std::process::Command::new(&path).spawn().map_err(|e| e.to_string())?;
+    update_log(&format!("installer written to {}", path.display()));
+    match std::process::Command::new(&path).spawn() {
+        Ok(child) => update_log(&format!("installer started, pid {}", child.id())),
+        Err(e) => {
+            update_log(&format!("installer failed to start: {e}"));
+            return Err(format!("could not start the installer: {e}"));
+        }
+    }
+    update_log("manager exiting for the install");
     // manager beenden, damit der installer die exe ersetzen kann
     std::process::exit(0)
+}
+
+fn update_log(line: &str) {
+    use std::io::Write;
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else { return };
+    let dir = std::path::PathBuf::from(base).join("com.chris.horseymodmanager");
+    let _ = fs::create_dir_all(&dir);
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(dir.join("update.log")) {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "{secs} {line}");
+    }
 }
 
 fn main() {
