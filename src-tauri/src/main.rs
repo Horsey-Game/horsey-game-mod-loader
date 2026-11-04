@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod tools;
+
 use serde::Serialize;
 use std::os::windows::process::CommandExt;
 use std::{
@@ -26,7 +28,44 @@ struct Status {
     horsey_running: bool,
 }
 
+// einstellungen aus settings.json, fehlende felder bekommen die standardwerte
+#[derive(Serialize, serde::Deserialize)]
+#[serde(default)]
+struct Settings {
+    // leer heißt: über steam suchen
+    game_dir: String,
+    check_updates: bool,
+    backups_keep: usize,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            game_dir: String::new(),
+            check_updates: true,
+            backups_keep: 5,
+        }
+    }
+}
+
+fn app_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("HorseyModManager"))
+}
+
+fn load_settings() -> Settings {
+    app_dir()
+        .and_then(|dir| fs::read_to_string(dir.join("settings.json")).ok())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
 fn find_game() -> Option<PathBuf> {
+    // eigener ordner aus den einstellungen hat vorrang vor steam
+    let custom = load_settings().game_dir;
+    if !custom.trim().is_empty() {
+        let dir = PathBuf::from(custom.trim());
+        return dir.join("Horsey.exe").exists().then_some(dir);
+    }
     let text = fs::read_to_string(STEAM_LIBRARIES).ok()?;
     for line in text.lines() {
         let parts: Vec<&str> = line.split('"').collect();
@@ -138,8 +177,6 @@ fn toggle_mod(dir: String) -> Result<(), String> {
 
 const SHIM_API_VERSION: i64 = 2;
 const SHIM_DLL: &[u8] = include_bytes!("../resources/version.dll");
-const BACKUPS_KEEP: usize = 5;
-
 #[derive(Serialize)]
 struct Installed {
     id: String,
@@ -236,7 +273,9 @@ fn prune_backups(root: &Path) {
         })
         .collect();
     dirs.sort();
-    let extra = dirs.len().saturating_sub(BACKUPS_KEEP);
+    // anzahl kommt aus den einstellungen, 1 bis 20
+    let keep = load_settings().backups_keep.clamp(1, 20);
+    let extra = dirs.len().saturating_sub(keep);
     for old in dirs.into_iter().take(extra) {
         let _ = fs::remove_dir_all(old);
     }
@@ -351,6 +390,8 @@ fn install_mod(zip_path: String, overwrite: bool) -> Result<Installed, String> {
         let _ = fs::remove_dir_all(&dest);
         return Err(e);
     }
+    // stand der dateien merken, für die integritätsprüfung
+    tools::record_integrity(&dest, &id);
     Ok(Installed {
         id,
         name,
@@ -534,7 +575,7 @@ const INDEX_PUBLIC_KEY_HEX: &str =
 const INDEX_SIG_URL: &str = "https://mods.badasswizard.boats/index.sig";
 
 // bei jedem manager-release hochsetzen, dann lassen sich alte listen nicht mehr einspielen
-const MIN_INDEX_SEQUENCE: u64 = 20;
+const MIN_INDEX_SEQUENCE: u64 = 21;
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_EXTRACT_BYTES: u64 = 200 * 1024 * 1024;
@@ -557,22 +598,38 @@ async fn fetch_index() -> Result<Vec<RemoteMod>, String> {
 async fn load_index() -> Result<IndexFile, String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
-    let index_bytes = http().get(INDEX_URL).send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .await
-        .map_err(|e| e.to_string())?;
-    let sig_text = http().get(INDEX_SIG_URL).send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
-        .map_err(|e| e.to_string())?;
+    // netz zuerst, bei fehler die letzte gespeicherte liste (die wird unten trotzdem geprüft)
+    let fetched = async {
+        let index_bytes = http().get(INDEX_URL).send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .bytes()
+            .await
+            .map_err(|e| e.to_string())?
+            .to_vec();
+        let sig_text = http().get(INDEX_SIG_URL).send()
+            .await
+            .map_err(|e| e.to_string())?
+            .error_for_status()
+            .map_err(|e| e.to_string())?
+            .text()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((index_bytes, sig_text))
+    }
+    .await;
+    let (index_bytes, sig_text) = match fetched {
+        Ok(files) => files,
+        Err(err) => {
+            let Some(files) = read_index_cache() else {
+                return Err(err);
+            };
+            log_file("app.log", &format!("mod list offline, using saved copy: {err}"));
+            files
+        }
+    };
 
     let key_bytes: [u8; 32] = hex_decode(INDEX_PUBLIC_KEY_HEX)
         .and_then(|v| v.try_into().ok())
@@ -604,7 +661,29 @@ async fn load_index() -> Result<IndexFile, String> {
             let _ = fs::write(&file, index.sequence.to_string());
         }
     }
+    // geprüfte liste merken, für den offline-fall
+    save_index_cache(&index_bytes, &sig_text);
     Ok(index)
+}
+
+fn index_cache_dir() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("cache"))
+}
+
+fn read_index_cache() -> Option<(Vec<u8>, String)> {
+    let dir = index_cache_dir()?;
+    let bytes = fs::read(dir.join("index.json")).ok()?;
+    let sig = fs::read_to_string(dir.join("index.sig")).ok()?;
+    Some((bytes, sig))
+}
+
+fn save_index_cache(bytes: &[u8], sig: &str) {
+    let Some(dir) = index_cache_dir() else {
+        return;
+    };
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("index.json"), bytes);
+    let _ = fs::write(dir.join("index.sig"), sig);
 }
 
 #[tauri::command]
@@ -804,10 +883,523 @@ fn app_log(line: String) {
     log_file("app.log", &line);
 }
 
+#[tauri::command]
+fn get_settings() -> Settings {
+    load_settings()
+}
+
+#[tauri::command]
+fn save_settings(settings: Settings) -> Result<(), String> {
+    // ordner muss ein horsey sein, sonst nichts speichern
+    let game_dir = settings.game_dir.trim().to_string();
+    if !game_dir.is_empty() && !PathBuf::from(&game_dir).join("Horsey.exe").exists() {
+        return Err("There is no Horsey.exe in that folder".into());
+    }
+    let saved = Settings {
+        game_dir,
+        check_updates: settings.check_updates,
+        backups_keep: settings.backups_keep.clamp(1, 20),
+    };
+    let dir = app_dir().ok_or("could not find the local app data folder")?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?;
+    fs::write(dir.join("settings.json"), text).map_err(|e| e.to_string())
+}
+
+fn log_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|dir| PathBuf::from(dir).join("com.chris.horseymodmanager"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[tauri::command]
+fn open_log_dir() -> Result<(), String> {
+    let dir = log_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+// letzte zeilen einer logdatei, lesefehler kommen als text zurück
+fn tail(path: &Path, lines: usize) -> String {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(&bytes);
+            let all: Vec<&str> = text.lines().collect();
+            let start = all.len().saturating_sub(lines);
+            let mut out = all[start..].join("\n");
+            out.push('\n');
+            out
+        }
+        Err(e) => format!("(could not read {}: {e})\n", path.display()),
+    }
+}
+
+// schreibt einen bericht für fehlersuche, gibt den pfad zurück
+#[tauri::command]
+async fn export_diagnostics() -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+
+    let settings = load_settings();
+    let status = load_status();
+    let mut out = format!(
+        "Horsey Mod Manager {}\nhorsey running: {}\ngame: {}\nsettings: game_dir={:?} check_updates={} backups_keep={}\n",
+        env!("CARGO_PKG_VERSION"),
+        status.horsey_running,
+        status.game_dir.as_deref().unwrap_or("not found"),
+        settings.game_dir,
+        settings.check_updates,
+        settings.backups_keep,
+    );
+    out.push_str("\nmods:\n");
+    for m in &status.mods {
+        out.push_str(&format!("  {} | {} | {} | {}\n", m.folder, m.name, m.version, m.state));
+    }
+    if let Some(game) = find_game() {
+        if let Ok(exe) = fs::read(game.join("Horsey.exe")) {
+            let hash: String = Sha256::digest(&exe).iter().map(|b| format!("{b:02x}")).collect();
+            out.push_str(&format!("\nHorsey.exe: {} bytes, sha256 {hash}\n", exe.len()));
+        }
+        out.push_str(&format!(
+            "\n--- SHIM.log (last 200 lines) ---\n{}",
+            tail(&game.join("SHIM.log"), 200)
+        ));
+    }
+    for name in ["app.log", "update.log"] {
+        out.push_str(&format!(
+            "\n--- {name} (last 200 lines) ---\n{}",
+            tail(&log_dir().join(name), 200)
+        ));
+    }
+    let dir = log_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("diagnostics.txt");
+    fs::write(&path, out).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+
+// --- infos pro mod für die oberfläche: api, abhängigkeiten, config ---
+#[derive(Serialize)]
+struct ModExtra {
+    folder: String,
+    id: String,
+    api_version: i64,
+    deps: Vec<String>,
+    has_config: bool,
+    // optional: beschreibung der config-felder aus dem manifest (label, min, max)
+    config_schema: serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct Extras {
+    shim_api: i64,
+    mods: Vec<ModExtra>,
+}
+
+// manifest lesen, egal ob der mod an oder aus ist
+fn read_manifest(dir: &Path) -> Option<serde_json::Value> {
+    let file = if dir.join("manifest.json").exists() {
+        dir.join("manifest.json")
+    } else {
+        dir.join("manifest.json.disabled")
+    };
+    serde_json::from_str(&fs::read_to_string(file).ok()?).ok()
+}
+
+// abhängigkeit als id, akzeptiert "id" oder {"id": ...}
+fn dep_id(v: &serde_json::Value) -> Option<String> {
+    v.as_str()
+        .map(str::to_string)
+        .or_else(|| v["id"].as_str().map(str::to_string))
+}
+
+fn mod_dirs(game: &Path) -> Vec<PathBuf> {
+    fs::read_dir(game.join("mods"))
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn mod_extras() -> Extras {
+    let mods = find_game()
+        .map(|game| {
+            mod_dirs(&game)
+                .iter()
+                .map(|dir| {
+                    let folder = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    let manifest = read_manifest(dir).unwrap_or(serde_json::Value::Null);
+                    ModExtra {
+                        id: manifest["id"].as_str().unwrap_or(&folder).to_string(),
+                        api_version: manifest["api_version"].as_i64().unwrap_or(0),
+                        deps: manifest["dependencies"]
+                            .as_array()
+                            .map(|a| a.iter().filter_map(dep_id).collect())
+                            .unwrap_or_default(),
+                        has_config: dir.join("config.lua").exists(),
+                        config_schema: manifest["config_schema"].clone(),
+                        folder,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Extras { shim_api: SHIM_API_VERSION, mods }
+}
+
+// --- config editor: config.lua, nur einfache werte (bool, zahl, text) ---
+#[derive(Serialize, serde::Deserialize)]
+struct ConfigField {
+    key: String,
+    kind: String,
+    value: String,
+}
+
+fn is_lua_number(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_digit() || "+-.eE".contains(c))
+        && s.parse::<f64>().is_ok()
+}
+
+// eine zeile wie `    speed = 2,` lesen, alles andere bleibt unangetastet
+fn parse_config_line(line: &str) -> Option<ConfigField> {
+    let (key, rest) = line.trim().split_once('=')?;
+    let key = key.trim();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let value = rest.trim().trim_end_matches(',').trim();
+    let (kind, value) = if value == "true" || value == "false" {
+        ("bool", value.to_string())
+    } else if is_lua_number(value) {
+        ("number", value.to_string())
+    } else if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        let inner = &value[1..value.len() - 1];
+        ("string", inner.replace("\\\"", "\"").replace("\\\\", "\\"))
+    } else {
+        return None;
+    };
+    Some(ConfigField {
+        key: key.to_string(),
+        kind: kind.to_string(),
+        value,
+    })
+}
+
+// feldwert in lua-schreibweise, mit prüfung
+fn lua_value(field: &ConfigField) -> Result<String, String> {
+    match field.kind.as_str() {
+        "bool" if field.value == "true" || field.value == "false" => Ok(field.value.clone()),
+        "bool" => Err(format!("{} must be true or false", field.key)),
+        "number" if is_lua_number(field.value.trim()) => Ok(field.value.trim().to_string()),
+        "number" => Err(format!("{} must be a number", field.key)),
+        "string" if field.value.contains(|c| c == '\n' || c == '\r') => {
+            Err(format!("{} cannot have line breaks", field.key))
+        }
+        "string" => Ok(format!(
+            "\"{}\"",
+            field.value.replace('\\', "\\\\").replace('"', "\\\"")
+        )),
+        _ => Err(format!("{} has an unknown type", field.key)),
+    }
+}
+
+fn config_path(dir: &str) -> Result<PathBuf, String> {
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    let target = mod_folder(&game, dir).ok_or("That folder is not inside the Horsey mods folder")?;
+    Ok(target.join("config.lua"))
+}
+
+#[tauri::command]
+fn read_config(dir: String) -> Result<Vec<ConfigField>, String> {
+    let text = fs::read_to_string(config_path(&dir)?).map_err(|e| e.to_string())?;
+    Ok(text.lines().filter_map(parse_config_line).collect())
+}
+
+// ändert nur die geänderten zeilen, der rest der datei bleibt gleich
+#[tauri::command]
+fn write_config(dir: String, fields: Vec<ConfigField>) -> Result<(), String> {
+    let path = config_path(&dir)?;
+    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut values = std::collections::HashMap::new();
+    for f in &fields {
+        tools::check_range(path.parent().unwrap_or(Path::new(".")), f)?;
+        values.insert(f.key.as_str(), lua_value(f)?);
+    }
+    let mut out = String::new();
+    for line in text.lines() {
+        let key = line.split_once('=').map(|(k, _)| k.trim()).unwrap_or("");
+        match values.get(key) {
+            Some(new) if parse_config_line(line).is_some() => {
+                let eq = line.find('=').unwrap_or(0);
+                let comma = if line.trim_end().ends_with(',') { "," } else { "" };
+                out.push_str(&format!("{} {}{}\n", line[..=eq].trim_end(), new, comma));
+            }
+            _ => {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    // alte fassung sichern, bevor sie überschrieben wird
+    fs::write(path.with_file_name("config.lua.bak"), &text).map_err(|e| e.to_string())?;
+    fs::write(&path, out).map_err(|e| e.to_string())
+}
+
+// --- crash-erkennung: exit-code und die letzte mod-zeile im SHIM.log ---
+#[derive(Serialize, Clone)]
+struct CrashReport {
+    code: Option<i32>,
+    crashed: bool,
+    culprit: Option<String>,
+    line: Option<String>,
+    // false, wenn horsey nicht aus dem manager gestartet wurde (dann gibt es keinen exit-code)
+    exit_known: bool,
+}
+
+// (id, name) aller mods, auch der ausgeschalteten
+fn mod_names(game: &Path) -> Vec<(String, String)> {
+    mod_dirs(game)
+        .iter()
+        .filter_map(|dir| {
+            let folder = dir.file_name()?.to_string_lossy().into_owned();
+            let manifest = read_manifest(dir)?;
+            let id = manifest["id"].as_str().unwrap_or(&folder).to_string();
+            let name = manifest["name"].as_str().unwrap_or(&folder).to_string();
+            Some((id, name))
+        })
+        .collect()
+}
+
+// der teil von SHIM.log, der seit dem start dazugekommen ist
+fn log_since(game: &Path, offset: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = fs::File::open(game.join("SHIM.log")) else {
+        return String::new();
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = if len < offset { 0 } else { offset };
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_ok() {
+        let _ = file.read_to_end(&mut bytes);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+// die letzte zeile, die von einem mod kommt, ist der verdächtige
+fn blame(lines: &[&str], mods: &[(String, String)]) -> Option<(String, String)> {
+    for line in lines.iter().rev() {
+        for (id, name) in mods {
+            let tagged = line.starts_with(&format!("[{id}]"));
+            let loaded = line.contains(&format!("loaded mod '{id}'"));
+            let path = line.contains(&format!("mods\\{id}\\")) || line.contains(&format!("mods/{id}/"));
+            if tagged || loaded || path {
+                return Some((name.clone(), line.to_string()));
+            }
+        }
+    }
+    None
+}
+
+fn crash_report(game: &Path, offset: u64, code: Option<i32>) -> CrashReport {
+    let log = log_since(game, offset);
+    let lines: Vec<&str> = log.lines().collect();
+    let (culprit, line) = match blame(&lines, &mod_names(game)) {
+        Some((name, line)) => (Some(name), Some(line)),
+        None => (None, None),
+    };
+    CrashReport {
+        code,
+        crashed: code != Some(0),
+        exit_known: true,
+        culprit,
+        line,
+    }
+}
+
+// startet horsey.exe, das ende meldet tools::launch (event horsey-exited)
+#[tauri::command]
+fn launch_horsey(app: tauri::AppHandle) -> Result<(), String> {
+    tools::launch(app, false)
+}
+
+// --- crash bisect: mods in hälften aus- und einschalten, bis einer übrig ist ---
+#[derive(Serialize, serde::Deserialize)]
+struct BisectState {
+    original: Vec<String>,
+    suspects: Vec<String>,
+    testing: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct BisectStep {
+    active: bool,
+    testing: Vec<String>,
+    suspects_left: usize,
+    culprit: Option<String>,
+}
+
+fn bisect_file() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("bisect.json"))
+}
+
+fn load_bisect() -> Option<BisectState> {
+    let text = fs::read_to_string(bisect_file()?).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn save_bisect(state: &BisectState) -> Result<(), String> {
+    let file = bisect_file().ok_or("could not find the local app data folder")?;
+    if let Some(dir) = file.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(state).map_err(|e| e.to_string())?;
+    fs::write(file, text).map_err(|e| e.to_string())
+}
+
+fn clear_bisect() {
+    if let Some(file) = bisect_file() {
+        let _ = fs::remove_file(file);
+    }
+}
+
+fn step_view(state: &BisectState, culprit: Option<String>) -> BisectStep {
+    BisectStep {
+        active: culprit.is_none(),
+        testing: state.testing.clone(),
+        suspects_left: state.suspects.len(),
+        culprit,
+    }
+}
+
+// an oder aus, je nachdem ob der mod im test ist
+fn set_mod_enabled(game: &Path, folder: &str, enabled: bool) -> Result<(), String> {
+    let dir = game.join("mods").join(folder);
+    let manifest = dir.join("manifest.json");
+    let disabled = dir.join("manifest.json.disabled");
+    let result = if enabled && disabled.exists() {
+        fs::rename(&disabled, &manifest)
+    } else if !enabled && manifest.exists() {
+        fs::rename(&manifest, &disabled)
+    } else {
+        Ok(())
+    };
+    result.map_err(|e| e.to_string())
+}
+
+fn apply_test(game: &Path, state: &BisectState) -> Result<(), String> {
+    for folder in &state.original {
+        set_mod_enabled(game, folder, state.testing.contains(folder))?;
+    }
+    Ok(())
+}
+
+fn restore_all(game: &Path, original: &[String]) -> Result<(), String> {
+    for folder in original {
+        set_mod_enabled(game, folder, true)?;
+    }
+    Ok(())
+}
+
+// die vordere hälfte der verdächtigen kommt in den test
+fn next_test(state: &mut BisectState) {
+    let half = (state.suspects.len() + 1) / 2;
+    state.testing = state.suspects[..half].to_vec();
+}
+
+#[tauri::command]
+fn bisect_status() -> Option<BisectStep> {
+    load_bisect().map(|state| step_view(&state, None))
+}
+
+#[tauri::command]
+fn bisect_start() -> Result<BisectStep, String> {
+    if horsey_running() {
+        return Err("Close Horsey first".into());
+    }
+    if load_bisect().is_some() {
+        return Err("A bisect is already running. Cancel it first.".into());
+    }
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    let enabled: Vec<String> = mod_dirs(&game)
+        .iter()
+        .filter(|d| d.join("manifest.json").exists())
+        .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    if enabled.len() < 2 {
+        return Err("Need at least two enabled mods to bisect".into());
+    }
+    let mut state = BisectState {
+        original: enabled.clone(),
+        suspects: enabled,
+        testing: Vec::new(),
+    };
+    next_test(&mut state);
+    if let Err(e) = apply_test(&game, &state) {
+        let _ = restore_all(&game, &state.original);
+        return Err(e);
+    }
+    if let Err(e) = save_bisect(&state) {
+        let _ = restore_all(&game, &state.original);
+        return Err(e);
+    }
+    log_file("app.log", &format!("bisect started with {} mods", state.original.len()));
+    Ok(step_view(&state, None))
+}
+
+#[tauri::command]
+fn bisect_answer(crashed: bool) -> Result<BisectStep, String> {
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    let mut state = load_bisect().ok_or("No bisect is running")?;
+    if crashed {
+        state.suspects = state.testing.clone();
+    } else {
+        let testing = state.testing.clone();
+        state.suspects.retain(|f| !testing.contains(f));
+    }
+    if state.suspects.len() == 1 {
+        let culprit = state.suspects[0].clone();
+        restore_all(&game, &state.original)?;
+        clear_bisect();
+        log_file("app.log", &format!("bisect found {culprit}"));
+        return Ok(step_view(&state, Some(culprit)));
+    }
+    next_test(&mut state);
+    apply_test(&game, &state)?;
+    save_bisect(&state)?;
+    Ok(step_view(&state, None))
+}
+
+#[tauri::command]
+fn bisect_cancel() -> Result<(), String> {
+    let Some(state) = load_bisect() else {
+        return Ok(());
+    };
+    let game = find_game().ok_or("Horsey Game was not found")?;
+    restore_all(&game, &state.original)?;
+    clear_bisect();
+    Ok(())
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|info| log_file("app.log", &format!("panic: {info}"))));
     log_file("app.log", &format!("start {}", env!("CARGO_PKG_VERSION")));
     tauri::Builder::default()
+        .setup(|app| {
+            // steam-starts erkennen und safe mode nach einem absturz aufräumen
+            tools::start_watch(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             load_status,
             toggle_mod,
@@ -821,7 +1413,36 @@ fn main() {
             shim_update_available,
             manager_update_available,
             apply_manager_update,
-            app_log
+            app_log,
+            get_settings,
+            save_settings,
+            open_log_dir,
+            export_diagnostics,
+            launch_horsey,
+            mod_extras,
+            read_config,
+            write_config,
+            bisect_status,
+            bisect_start,
+            bisect_answer,
+            bisect_cancel,
+            tools::check_integrity,
+            tools::record_baseline,
+            tools::list_backups,
+            tools::restore_backup,
+            tools::list_profiles,
+            tools::save_profile,
+            tools::apply_profile,
+            tools::delete_profile,
+            tools::game_version_status,
+            tools::accept_game_version,
+            tools::shim_signatures,
+            tools::safe_mode_launch,
+            tools::crash_history,
+            tools::clear_crash_history,
+            tools::shim_log,
+            tools::load_order,
+            tools::save_load_order
         ])
         .run(tauri::generate_context!())
         .expect("error while running Horsey Mod Manager");

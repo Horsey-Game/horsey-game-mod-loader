@@ -30,6 +30,9 @@
       <menu role="tablist" class="tabs">
         <li role="tab" id="tab-installed" aria-selected="true"><a href="#" data-view="installed">Installed</a></li>
         <li role="tab" id="tab-browse" aria-selected="false"><a href="#" data-view="browse">Browse</a></li>
+        <li role="tab" id="tab-crashes" aria-selected="false"><a href="#" data-view="crashes">Crashes</a></li>
+        <li role="tab" id="tab-tools" aria-selected="false"><a href="#" data-view="tools">Tools</a></li>
+        <li role="tab" id="tab-settings" aria-selected="false"><a href="#" data-view="settings">Settings</a></li>
       </menu>
 
       <div class="view" id="view-installed">
@@ -40,17 +43,22 @@
                 <th class="col-name">Name</th>
                 <th class="col-version">Version</th>
                 <th class="col-state">State</th>
+                <th class="col-notes">Notes</th>
               </tr>
             </thead>
             <tbody id="mod-rows"></tbody>
           </table>
         </div>
 
+        <div class="sunken-panel details" id="installed-details">Select a mod to see its details.</div>
+
         <div class="actions">
           <button id="btn-toggle" class="default" disabled>Enable / Disable</button>
           <button id="btn-remove" disabled>Uninstall</button>
+          <button id="btn-config" disabled>Config...</button>
           <button id="btn-vanilla">Back to Vanilla</button>
           <button id="btn-refresh">Refresh</button>
+          <button class="btn-launch">Launch Horsey</button>
         </div>
       </div>
 
@@ -74,6 +82,184 @@
         <div class="actions">
           <button id="btn-install" class="default" disabled>Install</button>
           <button id="btn-browse-refresh">Refresh List</button>
+          <button id="btn-update-all">Update All</button>
+        </div>
+      </div>
+
+      <div class="view" id="view-crashes" hidden>
+        <fieldset>
+          <legend>Log</legend>
+          <div class="field-row">
+            <label for="log-filter">Show</label>
+            <select id="log-filter"></select>
+            <button id="btn-log-refresh">Refresh</button>
+          </div>
+          <div class="sunken-panel log-panel" id="log-view">Open this tab to read SHIM.log.</div>
+        </fieldset>
+        <fieldset>
+          <legend>Exit history</legend>
+          <div class="sunken-panel list-panel short-panel">
+            <table class="interactive mod-table">
+              <thead>
+                <tr>
+                  <th class="col-name">When</th>
+                  <th class="col-state">Result</th>
+                  <th class="col-notes">Likely mod</th>
+                </tr>
+              </thead>
+              <tbody id="history-rows"></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button id="btn-history-clear">Clear History</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Last exit</legend>
+          <div class="sunken-panel details" id="crash-report">Nothing yet. Horsey started with a Launch button is checked when it closes.</div>
+        </fieldset>
+        <fieldset>
+          <legend>Crash bisect</legend>
+          <p class="help-text">Bisect turns mods off in halves to find the one that crashes Horsey. Start it, launch Horsey with a Launch button, then say whether it crashed. Repeat until one mod is left.</p>
+          <div class="sunken-panel details" id="bisect-status">Not running.</div>
+          <div class="actions">
+            <button id="btn-bisect-start">Start Bisect</button>
+            <button id="btn-bisect-crash" disabled>It Crashed</button>
+            <button id="btn-bisect-ok" disabled>No Crash</button>
+            <button id="btn-bisect-cancel" disabled>Cancel Bisect</button>
+            <button class="btn-launch">Launch Horsey</button>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="view" id="view-tools" hidden>
+        <fieldset>
+          <legend>Load order</legend>
+          <p class="help-text">Mods load from top to bottom. Changes apply the next time Horsey starts, and need a shim that reads load_order.txt.</p>
+          <div class="sunken-panel list-panel short-panel">
+            <table class="interactive mod-table">
+              <thead>
+                <tr>
+                  <th class="col-name">Mod</th>
+                  <th class="col-state">State</th>
+                </tr>
+              </thead>
+              <tbody id="order-rows"></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button id="btn-order-up" disabled>Move Up</button>
+            <button id="btn-order-down" disabled>Move Down</button>
+            <button id="btn-order-revert">Revert</button>
+            <button id="btn-order-save" class="default" disabled>Save Order</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Mod integrity</legend>
+          <div class="sunken-panel list-panel short-panel">
+            <table class="interactive mod-table">
+              <thead>
+                <tr>
+                  <th class="col-name">Mod</th>
+                  <th class="col-state">Status</th>
+                  <th class="col-notes">Problems</th>
+                </tr>
+              </thead>
+              <tbody id="integrity-rows"></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button id="btn-integrity-check">Check Mods</button>
+            <button id="btn-integrity-baseline">Record Baseline</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Backups</legend>
+          <div class="sunken-panel list-panel short-panel">
+            <table class="interactive mod-table">
+              <thead>
+                <tr>
+                  <th class="col-name">Date</th>
+                  <th class="col-state">Type</th>
+                  <th class="col-version">Mods</th>
+                  <th class="col-version">Changed</th>
+                </tr>
+              </thead>
+              <tbody id="backup-rows"></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button id="btn-backup-restore" disabled>Restore Selected</button>
+            <button id="btn-backup-refresh">Refresh List</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Profiles</legend>
+          <div class="sunken-panel list-panel short-panel">
+            <table class="interactive mod-table">
+              <thead>
+                <tr>
+                  <th class="col-name">Name</th>
+                  <th class="col-version">Mods on</th>
+                </tr>
+              </thead>
+              <tbody id="profile-rows"></tbody>
+            </table>
+          </div>
+          <div class="field-row-stacked">
+            <label for="profile-name">Save the current mod set as</label>
+            <input id="profile-name" class="wide-input" type="text" spellcheck="false">
+          </div>
+          <div class="actions">
+            <button id="btn-profile-save">Save Current</button>
+            <button id="btn-profile-apply" disabled>Apply</button>
+            <button id="btn-profile-delete" disabled>Delete</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Game and shim</legend>
+          <div class="sunken-panel details" id="game-status">Not checked yet.</div>
+          <div class="actions">
+            <button id="btn-game-check">Check Game</button>
+            <button id="btn-game-accept">Accept Game Version</button>
+            <button id="btn-sigs-check">Check Shim Signatures</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Safe mode</legend>
+          <p class="help-text">Starts Horsey with every mod off. Your mods come back on when it closes.</p>
+          <div class="actions">
+            <button id="btn-safe-launch">Safe Mode Launch</button>
+          </div>
+        </fieldset>
+      </div>
+
+      <div class="view" id="view-settings" hidden>
+        <fieldset>
+          <legend>Game</legend>
+          <div class="field-row-stacked">
+            <label for="set-game-dir">Game folder (empty = find it through Steam)</label>
+            <input id="set-game-dir" class="wide-input" type="text" spellcheck="false">
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Updates</legend>
+          <div class="field-row">
+            <input id="set-check-updates" type="checkbox">
+            <label for="set-check-updates">Check for shim and manager updates when the manager starts</label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Backups</legend>
+          <div class="field-row">
+            <label for="set-backups">Backups to keep (1 to 20)</label>
+            <input id="set-backups" class="narrow-input" type="number" min="1" max="20">
+          </div>
+        </fieldset>
+        <div class="actions">
+          <button id="btn-open-logs">Open Logs</button>
+          <button id="btn-diagnostics">Export Diagnostics</button>
+          <button id="btn-settings-save" class="default">Save</button>
         </div>
       </div>
     </div>
@@ -94,6 +280,22 @@
         <div class="actions">
           <button id="confirm-ok" class="default">OK</button>
           <button id="confirm-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="config-modal" hidden>
+    <div class="window modal config-modal">
+      <div class="title-bar">
+        <div class="title-bar-text" id="config-title">Config</div>
+      </div>
+      <div class="window-body modal-body">
+        <div id="config-fields"></div>
+        <p class="modal-text" id="config-note"></p>
+        <div class="actions">
+          <button id="config-save" class="default">Save</button>
+          <button id="config-cancel">Cancel</button>
         </div>
       </div>
     </div>

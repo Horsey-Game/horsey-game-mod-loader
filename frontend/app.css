@@ -140,3 +140,83 @@ html, body {
   word-break: break-word;
   font-size: 11px;
 }
+
+
+.wide-input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.narrow-input {
+  width: 70px;
+}
+
+
+.actions {
+  flex-wrap: wrap;
+}
+
+.modal-text {
+  white-space: pre-line;
+}
+
+.help-text {
+  margin: 0 0 8px;
+}
+
+.config-modal {
+  min-width: 380px;
+}
+
+.config-row label {
+  min-width: 150px;
+}
+
+.config-row input[type='text'] {
+  flex: 1;
+}
+
+#config-fields {
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.col-notes {
+  width: auto;
+}
+
+.short-panel {
+  flex: none;
+  max-height: 120px;
+  margin-bottom: 6px;
+}
+
+#view-tools,
+#view-settings,
+#view-crashes {
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* 98.css zeichnet an jedem ende zwei pfeile, der zweite (double-button) ist doppelt */
+::-webkit-scrollbar-button:double-button {
+  display: none;
+}
+
+.log-panel {
+  height: 150px;
+  overflow: auto;
+  margin-top: 6px;
+  padding: 4px;
+  white-space: pre;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 11px;
+}
+
+/* versionsnummern in einer schrift mit deutlichen punkten, sonst wird 0.1.2 zu 0.12 */
+#mod-rows td:nth-child(2),
+#remote-rows td:nth-child(2) {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
