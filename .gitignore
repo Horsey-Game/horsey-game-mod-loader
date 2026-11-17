@@ -1,4 +1,4 @@
 /src-tauri/target/
 node_modules/
 *.log
-
+/scripts/__pycache__

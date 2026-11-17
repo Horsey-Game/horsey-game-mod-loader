@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod account;
 mod tools;
 
 use serde::Serialize;
@@ -381,15 +382,16 @@ fn install_mod(zip_path: String, overwrite: bool) -> Result<Installed, String> {
     backup_game(&game)?;
     let shim_installed = ensure_shim(&game)?;
 
-    if dest.exists() {
-        fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
-    }
-    fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let staging = mods_dir.join(format!("{id}.installing"));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
 
-    if let Err(e) = extract(&mut archive, &prefix, &dest) {
-        let _ = fs::remove_dir_all(&dest);
+    if let Err(e) = extract(&mut archive, &prefix, &staging) {
+        let _ = fs::remove_dir_all(&staging);
         return Err(e);
     }
+    let old = mods_dir.join(format!("{id}.old"));
+    swap_into_place(&staging, &dest, &old)?;
     // stand der dateien merken, für die integritätsprüfung
     tools::record_integrity(&dest, &id);
     Ok(Installed {
@@ -508,6 +510,10 @@ fn uninstall_mod(dir: String) -> Result<(), String> {
 const INDEX_URL: &str = "https://mods.badasswizard.boats/index.json";
 
 fn from_mod_server(url: &str) -> bool {
+    // -test: zips come from the local test server only
+    if is_test_mode() && url.starts_with(&format!("{TEST_SERVER}/files/")) {
+        return true;
+    }
     reqwest::Url::parse(url)
         .map(|u| u.scheme() == "https" && u.host_str() == Some("mods.badasswizard.boats"))
         .unwrap_or(false)
@@ -574,6 +580,38 @@ const INDEX_PUBLIC_KEY_HEX: &str =
     "58a9b3f690eff8f58a116e4bf309491790e8e8ee60034854a0beaed067c36f97";
 const INDEX_SIG_URL: &str = "https://mods.badasswizard.boats/index.sig";
 
+// -test: the local test server (horsey-web, run-local.cmd) and its TEST key. the production key is never used here.
+const TEST_SERVER: &str = "http://localhost:5000";
+const TEST_INDEX_KEY_HEX: &str = "d8bf41c8ebeb170111aed1faadf7637fe796f0c72905106f4f83c298acd97a8e";
+
+fn is_test_mode() -> bool {
+    std::env::args().any(|a| a == "-test")
+}
+
+fn index_url() -> String {
+    if is_test_mode() {
+        format!("{TEST_SERVER}/index.json")
+    } else {
+        INDEX_URL.to_string()
+    }
+}
+
+fn index_sig_url() -> String {
+    if is_test_mode() {
+        format!("{TEST_SERVER}/index.sig")
+    } else {
+        INDEX_SIG_URL.to_string()
+    }
+}
+
+fn index_key_hex() -> &'static str {
+    if is_test_mode() {
+        TEST_INDEX_KEY_HEX
+    } else {
+        INDEX_PUBLIC_KEY_HEX
+    }
+}
+
 // bei jedem manager-release hochsetzen, dann lassen sich alte listen nicht mehr einspielen
 const MIN_INDEX_SEQUENCE: u64 = 21;
 
@@ -595,21 +633,43 @@ async fn fetch_index() -> Result<Vec<RemoteMod>, String> {
     Ok(load_index().await?.mods)
 }
 
-async fn load_index() -> Result<IndexFile, String> {
+fn verify_index(key_hex: &str, index_bytes: &[u8], sig_text: &str) -> Result<IndexFile, String> {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
+    let key_bytes: [u8; 32] = hex_decode(key_hex)
+        .and_then(|v| v.try_into().ok())
+        .ok_or("the app has a bad public key")?;
+    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|e| e.to_string())?;
+    let sig_bytes = hex_decode(sig_text.trim()).ok_or("the mod list signature is malformed")?;
+    let signature = Signature::from_slice(&sig_bytes).map_err(|e| e.to_string())?;
+    key.verify(index_bytes, &signature)
+        .map_err(|_| "the mod list signature does not match, not loading it".to_string())?;
+    serde_json::from_slice(index_bytes).map_err(|e| format!("mod list is not valid: {e}"))
+}
+
+async fn load_index() -> Result<IndexFile, String> {
     // netz zuerst, bei fehler die letzte gespeicherte liste (die wird unten trotzdem geprüft)
     let fetched = async {
-        let index_bytes = http().get(INDEX_URL).send()
-            .await
-            .map_err(|e| e.to_string())?
+        let index_resp = http().get(index_url()).send().await.map_err(|e| e.to_string())?;
+        if index_resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            let text = index_resp.text().await.unwrap_or_default();
+            let body: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+            if body["code"].as_str() == Some("maintenance") {
+                return Err(format!(
+                    "under maintenance: {}",
+                    body["error"].as_str().unwrap_or("try again later")
+                ));
+            }
+            return Err("the mod server is not available right now".into());
+        }
+        let index_bytes = index_resp
             .error_for_status()
             .map_err(|e| e.to_string())?
             .bytes()
             .await
             .map_err(|e| e.to_string())?
             .to_vec();
-        let sig_text = http().get(INDEX_SIG_URL).send()
+        let sig_text = http().get(index_sig_url()).send()
             .await
             .map_err(|e| e.to_string())?
             .error_for_status()
@@ -623,6 +683,10 @@ async fn load_index() -> Result<IndexFile, String> {
     let (index_bytes, sig_text) = match fetched {
         Ok(files) => files,
         Err(err) => {
+            // maintenance is not an offline case: show the message, do not use the saved list
+            if err.starts_with("under maintenance") {
+                return Err(err);
+            }
             let Some(files) = read_index_cache() else {
                 return Err(err);
             };
@@ -631,19 +695,9 @@ async fn load_index() -> Result<IndexFile, String> {
         }
     };
 
-    let key_bytes: [u8; 32] = hex_decode(INDEX_PUBLIC_KEY_HEX)
-        .and_then(|v| v.try_into().ok())
-        .ok_or("the app has a bad public key")?;
-    let key = VerifyingKey::from_bytes(&key_bytes).map_err(|e| e.to_string())?;
-    let sig_bytes = hex_decode(sig_text.trim()).ok_or("the mod list signature is malformed")?;
-    let signature = Signature::from_slice(&sig_bytes).map_err(|e| e.to_string())?;
-    key.verify(&index_bytes, &signature)
-        .map_err(|_| "the mod list signature does not match, not loading it".to_string())?;
-
-    let index: IndexFile = serde_json::from_slice(&index_bytes)
-        .map_err(|e| format!("mod list is not valid: {e}"))?;
-    // alte signierte listen werden auch bei neuer installation abgelehnt
-    if index.sequence < MIN_INDEX_SEQUENCE {
+    let index = verify_index(index_key_hex(), &index_bytes, &sig_text)?;
+    // alte signierte listen werden auch bei neuer installation abgelehnt (test-liste ausgenommen)
+    if !is_test_mode() && index.sequence < MIN_INDEX_SEQUENCE {
         return Err("mod list is older than this manager allows, not loading it".into());
     }
     if let Some(file) = sequence_file() {
@@ -688,8 +742,6 @@ fn save_index_cache(bytes: &[u8], sig: &str) {
 
 #[tauri::command]
 async fn install_remote(url: String, overwrite: bool) -> Result<Installed, String> {
-    use sha2::{Digest, Sha256};
-
     if !from_mod_server(&url) {
         return Err("download URL is not from the mod server".into());
     }
@@ -701,31 +753,8 @@ async fn install_remote(url: String, overwrite: bool) -> Result<Installed, Strin
         .ok_or("that mod is not in the signed mod list")?;
     let sha256 = listed.sha256.clone();
     let size = listed.size;
-    if size > MAX_DOWNLOAD_BYTES {
-        return Err("mod is larger than the mod manager allows, not downloading".into());
-    }
-    let mut resp = http().get(&url).send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?;
-    let mut bytes: Vec<u8> = Vec::with_capacity(size as usize);
-    while let Some(chunk) = resp.chunk().await.map_err(|e| e.to_string())? {
-        if bytes.len() as u64 + chunk.len() as u64 > size {
-            return Err("download is larger than the index says, not installing".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    if bytes.len() as u64 != size {
-        return Err("download size does not match the index, not installing".into());
-    }
-    let actual: String = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    if actual != sha256.to_lowercase() {
-        return Err("checksum does not match the index, not installing".into());
-    }
+    let mod_id = listed.id.clone();
+    let bytes = download_checked(&url, size, &sha256).await?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -741,6 +770,9 @@ async fn install_remote(url: String, overwrite: bool) -> Result<Installed, Strin
     }
     let result = install_mod(path.display().to_string(), overwrite);
     let _ = fs::remove_file(&path);
+    if result.is_ok() {
+        account::report_download(&mod_id).await;
+    }
     result
 }
 
@@ -818,7 +850,14 @@ async fn apply_manager_update() -> Result<(), String> {
     let dir = std::env::temp_dir().join(format!("horsey-mm-update-{}-{nonce}", std::process::id()));
     fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("horsey-mod-manager-{}-setup.exe", entry.version));
-    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut held = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(1)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    std::io::Write::write_all(&mut held, &bytes).map_err(|e| e.to_string())?;
     update_log(&format!("installer written to {}", path.display()));
     let verb = wide("runas");
     let file = wide(&path.to_string_lossy());
@@ -1391,9 +1430,58 @@ fn bisect_cancel() -> Result<(), String> {
     Ok(())
 }
 
+// tauscht den fertigen ordner an die stelle des alten mods. schlägt der tausch fehl,
+// kommt die alte version zurück.
+fn swap_into_place(staging: &Path, dest: &Path, old: &Path) -> Result<(), String> {
+    let _ = fs::remove_dir_all(old);
+    if !dest.exists() {
+        return fs::rename(staging, dest).map_err(|e| e.to_string());
+    }
+    fs::rename(dest, old).map_err(|e| e.to_string())?;
+    if let Err(e) = fs::rename(staging, dest) {
+        let _ = fs::rename(old, dest);
+        let _ = fs::remove_dir_all(staging);
+        return Err(e.to_string());
+    }
+    let _ = fs::remove_dir_all(old);
+    Ok(())
+}
+
+// reste von einem abgebrochenen install: *.installing wegwerfen, *.old zurückholen wenn der mod fehlt.
+// so lädt das spiel nie einen halb entpackten mod.
+fn clean_mods_dir(mods: &Path) {
+    let Ok(entries) = fs::read_dir(mods) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".installing") {
+            let _ = fs::remove_dir_all(&path);
+        } else if let Some(id) = name.strip_suffix(".old") {
+            let dest = path.with_file_name(id);
+            if dest.exists() {
+                let _ = fs::remove_dir_all(&path);
+            } else {
+                let _ = fs::rename(&path, &dest);
+            }
+        }
+    }
+}
+
+fn clean_leftovers() {
+    if let Some(game) = find_game() {
+        clean_mods_dir(&game.join("mods"));
+    }
+}
+
+#[cfg(test)]
+mod swap_tests;
+
 fn main() {
     std::panic::set_hook(Box::new(|info| log_file("app.log", &format!("panic: {info}"))));
     log_file("app.log", &format!("start {}", env!("CARGO_PKG_VERSION")));
+    clean_leftovers();
     tauri::Builder::default()
         .setup(|app| {
             // steam-starts erkennen und safe mode nach einem absturz aufräumen
@@ -1442,7 +1530,16 @@ fn main() {
             tools::clear_crash_history,
             tools::shim_log,
             tools::load_order,
-            tools::save_load_order
+            tools::save_load_order,
+            account::sign_in,
+            account::account,
+            account::sign_out,
+            account::my_uploads,
+            account::upload_mod,
+            account::list_drafts,
+            account::create_mod,
+            account::mod_downloads,
+            account::report_mod
         ])
         .run(tauri::generate_context!())
         .expect("error while running Horsey Mod Manager");
@@ -1492,8 +1589,10 @@ async fn download_checked(url: &str, size: u64, sha256: &str) -> Result<Vec<u8>,
 
 
 fn sequence_file() -> Option<std::path::PathBuf> {
+    // -test has its own counter, so the test list never collides with the live one
+    let name = if is_test_mode() { "index_sequence_test.txt" } else { "index_sequence.txt" };
     std::env::var_os("LOCALAPPDATA")
-        .map(|dir| std::path::PathBuf::from(dir).join("HorseyModManager").join("index_sequence.txt"))
+        .map(|dir| std::path::PathBuf::from(dir).join("HorseyModManager").join(name))
 }
 
 
@@ -1523,5 +1622,46 @@ mod tests {
         assert!(!from_mod_server("https://mods.badasswizard.boats.example.com/files/a.zip"));
         assert!(!from_mod_server("https://example.com/files/a.zip"));
         assert!(!from_mod_server("not a url"));
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn index_signature_is_checked() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let key_hex = hex_of(&signing.verifying_key().to_bytes());
+        let index = br#"{"sequence":30,"mods":[]}"#;
+        let sig = hex_of(&signing.sign(index).to_bytes());
+        assert!(verify_index(&key_hex, index, &sig).is_ok());
+        let mut tampered = index.to_vec();
+        tampered[10] ^= 1;
+        assert!(verify_index(&key_hex, &tampered, &sig).is_err());
+        assert!(verify_index(&key_hex, index, "00").is_err());
+    }
+
+    #[test]
+    fn extract_refuses_paths_outside_the_mod() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("horsey-test-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let zip_path = dir.join("bad.zip");
+        {
+            let mut w = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+            let opts = zip::write::SimpleFileOptions::default();
+            w.start_file("pkg/manifest.json", opts).unwrap();
+            w.write_all(b"{}").unwrap();
+            w.start_file("pkg/../../escape.txt", opts).unwrap();
+            w.write_all(b"x").unwrap();
+            w.finish().unwrap();
+        }
+        let mut archive = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
+        let dest = dir.join("out");
+        fs::create_dir_all(&dest).unwrap();
+        assert!(extract(&mut archive, "pkg/", &dest).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

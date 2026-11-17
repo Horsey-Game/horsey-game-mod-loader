@@ -220,3 +220,51 @@ html, body {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
+
+
+/* account row: sign in line, with more space above and below */
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 16px;
+}
+
+/* new mod form (ported from HorseyModManager, no flex: 1 so it fits the 1.0 layout) */
+.form-panel {
+  padding: 10px;
+  overflow: auto;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.form-grid input,
+.form-grid select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.form-grid textarea {
+  width: 100%;
+  height: 56px;
+  box-sizing: border-box;
+  resize: none;
+}
+
+
+/* new mod form panel: grey like the window, not white (98.css sunken-panel is white) */
+.sunken-panel.form-panel {
+  background: #c0c0c0;
+}
+
+/* melde-fenster: textfeld über die ganze breite */
+#report-reason {
+  width: 100%;
+  box-sizing: border-box;
+}

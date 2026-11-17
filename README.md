@@ -35,7 +35,16 @@ each mod is a zip with a manifest.json at the root or inside one top level folde
 }
 ```
 
-api_version has to be 1 right now. the id can only use letters numbers - and _
+api_version is 1 or 2. use 2 for new mods. the id can only use letters numbers - and _
+
+## installing
+
+the installer is not code signed yet, so windows smartscreen may say "windows protected your pc". click "more info" and then "run anyway". the release page lists a sha256 for the installer, so you can check the download first.
+
+## reporting and uploading mods
+
+- browse tab: pick a mod and press report. you need to sign in with discord first. a report goes to a review queue and is read by a person.
+- mods are uploaded through the mod server. every upload is looked at by hand before it shows up in browse.
 
 ## building
 

@@ -27,9 +27,16 @@
         <span id="game-path">Looking for Horsey Game...</span>
       </p>
 
+      <div class="account-row">
+        <span id="account-text">Not signed in</span>
+        <button id="btn-account">Sign In</button>
+      </div>
+
       <menu role="tablist" class="tabs">
         <li role="tab" id="tab-installed" aria-selected="true"><a href="#" data-view="installed">Installed</a></li>
         <li role="tab" id="tab-browse" aria-selected="false"><a href="#" data-view="browse">Browse</a></li>
+        <li role="tab" id="tab-mymods" aria-selected="false"><a href="#" data-view="mymods">My Mods</a></li>
+        <li role="tab" id="tab-newmod" aria-selected="false"><a href="#" data-view="newmod">New Mod</a></li>
         <li role="tab" id="tab-crashes" aria-selected="false"><a href="#" data-view="crashes">Crashes</a></li>
         <li role="tab" id="tab-tools" aria-selected="false"><a href="#" data-view="tools">Tools</a></li>
         <li role="tab" id="tab-settings" aria-selected="false"><a href="#" data-view="settings">Settings</a></li>
@@ -83,6 +90,56 @@
           <button id="btn-install" class="default" disabled>Install</button>
           <button id="btn-browse-refresh">Refresh List</button>
           <button id="btn-update-all">Update All</button>
+          <button id="btn-report" disabled>Report...</button>
+        </div>
+      </div>
+
+      <div class="view" id="view-mymods" hidden>
+        <div class="sunken-panel list-panel">
+          <table class="interactive mod-table">
+            <thead>
+              <tr>
+                <th class="col-name">Mod</th>
+                <th class="col-version">Version</th>
+                <th class="col-state">Status</th>
+              </tr>
+            </thead>
+            <tbody id="my-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="sunken-panel details" id="my-details">Drop a mod .zip or folder on this tab to upload it.</div>
+
+        <div class="actions">
+          <button id="btn-upload" class="default" disabled>Upload Selected</button>
+          <button id="btn-mymods-refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="view" id="view-newmod" hidden>
+        <div class="sunken-panel form-panel">
+          <div class="form-grid">
+            <label for="new-id">ID</label>
+            <input id="new-id" maxlength="40" placeholder="my_mod">
+            <label for="new-name">Name</label>
+            <input id="new-name" maxlength="60">
+            <label for="new-version">Version</label>
+            <input id="new-version" maxlength="32" value="1.0.0">
+            <label for="new-api">API</label>
+            <select id="new-api">
+              <option value="2">2</option>
+              <option value="1">1</option>
+            </select>
+            <label for="new-desc">Description</label>
+            <textarea id="new-desc" maxlength="500"></textarea>
+            <label for="new-icon">Icon</label>
+            <input id="new-icon" readonly placeholder="drop a PNG on this tab (optional)">
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btn-icon-clear">Clear Icon</button>
+          <button id="btn-create" class="default">Create Draft</button>
         </div>
       </div>
 
@@ -280,6 +337,23 @@
         <div class="actions">
           <button id="confirm-ok" class="default">OK</button>
           <button id="confirm-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- melden: grund eingeben, geht an die prüfung des besitzers -->
+  <div class="modal-backdrop" id="report-modal" hidden>
+    <div class="window modal">
+      <div class="title-bar">
+        <div class="title-bar-text">Report mod</div>
+      </div>
+      <div class="window-body modal-body">
+        <p class="modal-text" id="report-text">Why are you reporting this mod? (1 to 500 characters)</p>
+        <textarea id="report-reason" rows="4" maxlength="500"></textarea>
+        <div class="actions">
+          <button id="report-send" class="default">Send report</button>
+          <button id="report-cancel">Cancel</button>
         </div>
       </div>
     </div>

@@ -455,7 +455,19 @@ async function installZip(path) {
 
 appWindow.onDragDropEvent(async (event) => {
   if (event.payload.type !== 'drop') return;
-  const zips = event.payload.paths.filter((p) => p.toLowerCase().endsWith('.zip'));
+  const allPaths = event.payload.paths;
+  const pngs = allPaths.filter((p) => p.toLowerCase().endsWith('.png'));
+  const uploadZips = allPaths.filter((p) => p.toLowerCase().endsWith('.zip'));
+  // new mod tab: png wird das icon, my mods tab: zips werden hochgeladen
+  if (!$('view-newmod').hidden && pngs.length) {
+    setIcon(pngs[0]);
+    return;
+  }
+  if (!$('view-mymods').hidden && uploadZips.length) {
+    await uploadPaths(uploadZips);
+    return;
+  }
+  const zips = uploadZips;
   if (zips.length === 0) {
     setStatus('Drop a mod .zip onto the window to install it');
     return;
@@ -483,6 +495,7 @@ function showView(name) {
     stopLogTimer();
   }
   if (name === 'tools') refreshTools();
+  if (name === 'mymods') loadMyMods();
 }
 
 function remoteStatus(mod) {
@@ -533,6 +546,50 @@ function selectRemote(id) {
     : 'Select a mod to see its details.';
   $('btn-install').disabled = !mod;
   $('btn-install').textContent = mod ? actionLabel(remoteStatus(mod)) : 'Install';
+  $('btn-report').disabled = !mod;
+  if (mod) loadDownloadCount(mod.id);
+}
+
+// downloads holt die zahl vom server. ohne anmeldung oder offline wird einfach keine zahl gezeigt.
+async function loadDownloadCount(id) {
+  try {
+    const count = await invoke('mod_downloads', { id });
+    // nur anhängen, wenn der mod noch ausgewählt ist
+    if (selectedRemoteId === id) $('remote-details').textContent += `\nDownloads: ${count}`;
+  } catch (_) {
+    // keine zahl ist kein fehler
+  }
+}
+
+// melden: grund eingeben, der server legt die meldung in die prüfwarteschlange
+function openReport() {
+  const mod = selectedRemote();
+  if (!mod) return;
+  $('report-text').textContent = `Why are you reporting ${mod.name}? (1 to 500 characters)`;
+  $('report-reason').value = '';
+  $('report-modal').hidden = false;
+  $('report-reason').focus();
+}
+
+function closeReport() {
+  $('report-modal').hidden = true;
+}
+
+async function sendReport() {
+  const mod = selectedRemote();
+  const reason = $('report-reason').value.trim();
+  if (!mod) return closeReport();
+  if (!reason) {
+    $('report-text').textContent = 'Write a reason first.';
+    return;
+  }
+  try {
+    await invoke('report_mod', { id: mod.id, reason });
+    closeReport();
+    setStatus(`Report for ${mod.name} sent.`);
+  } catch (err) {
+    $('report-text').textContent = String(err);
+  }
 }
 
 function renderRemote() {
@@ -736,6 +793,9 @@ document.querySelectorAll('.tabs a').forEach((a) => {
   });
 });
 $('btn-install').addEventListener('click', installSelectedRemote);
+$('btn-report').addEventListener('click', openReport);
+$('report-send').addEventListener('click', sendReport);
+$('report-cancel').addEventListener('click', closeReport);
 $('btn-browse-refresh').addEventListener('click', loadRemote);
 $('btn-settings-save').addEventListener('click', saveSettings);
 $('btn-diagnostics').addEventListener('click', exportDiagnostics);
@@ -1204,3 +1264,174 @@ $('btn-order-up').addEventListener('click', () => moveOrder(-1));
 $('btn-order-down').addEventListener('click', () => moveOrder(1));
 $('btn-order-revert').addEventListener('click', refreshOrder);
 $('btn-order-save').addEventListener('click', saveOrder);
+
+
+// ---- konto, uploads, entwürfe, neuer mod ----
+
+const STATUS_TEXT = {
+  pending: 'Waiting for review',
+  approved: 'Approved',
+  rejected: 'Rejected',
+};
+
+let account = null;
+let myRows = [];
+let selectedMyRow = null;
+let newIcon = '';
+
+function setIcon(path) {
+  newIcon = path;
+  $('new-icon').value = path.split(/[\\/]/).pop();
+  setStatus('Icon set');
+}
+
+async function refreshAccount() {
+  try {
+    account = await invoke('account');
+  } catch (err) {
+    account = null;
+    setStatus(String(err));
+  }
+  $('account-text').textContent = account ? `Signed in as ${account.username}` : 'Not signed in';
+  $('btn-account').textContent = account ? 'Sign Out' : 'Sign In';
+  await loadMyMods();
+}
+
+async function signInOrOut() {
+  $('btn-account').disabled = true;
+  try {
+    if (account) {
+      await invoke('sign_out');
+      setStatus('Signed out');
+    } else {
+      setStatus('Opening your browser to sign in with Discord...');
+      const signedIn = await invoke('sign_in');
+      setStatus(`Signed in as ${signedIn.username}`);
+    }
+  } catch (err) {
+    setStatus(`Sign in failed: ${err}`);
+  }
+  $('btn-account').disabled = false;
+  await refreshAccount();
+}
+
+async function loadMyMods() {
+  const rows = [];
+  try {
+    const drafts = await invoke('list_drafts');
+    for (const d of drafts) {
+      rows.push({ kind: 'draft', name: d.name, version: d.version, status: 'Draft (not uploaded)', dir: d.dir });
+    }
+  } catch (err) {
+    setStatus(String(err));
+  }
+  if (account) {
+    try {
+      const uploads = await invoke('my_uploads');
+      for (const u of uploads) {
+        rows.push({
+          kind: 'upload',
+          name: u.mod_id,
+          version: u.version,
+          status: STATUS_TEXT[u.status] ?? u.status,
+        });
+      }
+    } catch (err) {
+      setStatus(String(err));
+    }
+  }
+  renderMyMods(rows);
+}
+
+function selectMyRow(index) {
+  selectedMyRow = index;
+  document.querySelectorAll('#my-rows tr').forEach((tr) => {
+    tr.classList.toggle('highlighted', Number(tr.dataset.index) === index);
+  });
+  const row = myRows[index];
+  $('btn-upload').disabled = !(row && row.kind === 'draft');
+  $('my-details').textContent = row
+    ? `${row.name} ${row.version}\n${row.kind === 'draft' ? row.dir : row.status}`
+    : 'Drop a mod .zip on this tab to upload it.';
+}
+
+function renderMyMods(rows) {
+  myRows = rows;
+  selectedMyRow = null;
+  $('my-rows').replaceChildren(
+    ...rows.map((row, i) => {
+      const tr = document.createElement('tr');
+      tr.dataset.index = i;
+      tr.append(cell(row.name), cell(row.version), cell(row.status));
+      tr.addEventListener('click', () => selectMyRow(i));
+      return tr;
+    })
+  );
+  $('btn-upload').disabled = true;
+  if (!account) {
+    $('my-details').textContent = 'Sign in to upload mods and see their review status. Drafts are kept in your Horsey mods folder.';
+  } else if (rows.length === 0) {
+    $('my-details').textContent = 'No mods yet. Make one on the New Mod tab, or drop a mod .zip here.';
+  } else {
+    $('my-details').textContent = 'Select a draft and press Upload Selected to send it for review.';
+  }
+}
+
+async function uploadPaths(paths) {
+  if (!account) {
+    setStatus('Sign in first, then upload');
+    return;
+  }
+  const messages = [];
+  for (const path of paths) {
+    try {
+      const res = await invoke('upload_mod', { path });
+      messages.push(`Sent ${res.mod_id} ${res.version} for review`);
+    } catch (err) {
+      messages.push(`${path.split(/[\\/]/).pop()}: ${err}`);
+    }
+  }
+  await loadMyMods();
+  setStatus(messages.join(' | '));
+}
+
+async function uploadSelectedDraft() {
+  const row = myRows[selectedMyRow];
+  if (!row || row.kind !== 'draft') return;
+  setStatus(`Uploading ${row.name}...`);
+  await uploadPaths([row.dir]);
+}
+
+async function createDraft() {
+  const form = {
+    id: $('new-id').value,
+    name: $('new-name').value,
+    version: $('new-version').value,
+    description: $('new-desc').value,
+    api_version: Number($('new-api').value),
+    icon: newIcon,
+  };
+  try {
+    const draft = await invoke('create_mod', { form });
+    setStatus(`Created draft ${draft.name}. Upload it from My Mods.`);
+    $('new-id').value = '';
+    $('new-name').value = '';
+    $('new-desc').value = '';
+    newIcon = '';
+    $('new-icon').value = '';
+    showView('mymods');
+  } catch (err) {
+    setStatus(String(err));
+  }
+}
+
+$('btn-account').addEventListener('click', signInOrOut);
+$('btn-upload').addEventListener('click', uploadSelectedDraft);
+$('btn-mymods-refresh').addEventListener('click', loadMyMods);
+$('btn-create').addEventListener('click', createDraft);
+$('btn-icon-clear').addEventListener('click', () => {
+  newIcon = '';
+  $('new-icon').value = '';
+});
+
+refreshAccount();
