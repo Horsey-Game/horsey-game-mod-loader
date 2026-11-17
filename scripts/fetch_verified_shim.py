@@ -9,7 +9,7 @@ import urllib.request
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-HOST = "mods.badasswizard.boats"
+HOST = "horsey-web.badasswizard.boats"
 INDEX_URL = f"https://{HOST}/index.json"
 SIG_URL = f"https://{HOST}/index.sig"
 OUT = os.path.join("src-tauri", "resources", "version.dll")

@@ -10,7 +10,7 @@ use std::{
 
 use super::http;
 
-const MOD_SERVER: &str = "https://mods.badasswizard.boats";
+const MOD_SERVER: &str = "https://horsey-web.badasswizard.boats";
 const TOKEN_SERVICE: &str = "HorseyModManager";
 const TOKEN_USER: &str = "account";
 const MAX_UPLOAD_BYTES: u64 = 50 * 1024 * 1024;

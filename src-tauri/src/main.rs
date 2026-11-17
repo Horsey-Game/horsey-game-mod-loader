@@ -507,7 +507,7 @@ fn uninstall_mod(dir: String) -> Result<(), String> {
     fs::remove_dir_all(&target).map_err(|e| e.to_string())
 }
 
-const INDEX_URL: &str = "https://mods.badasswizard.boats/index.json";
+const INDEX_URL: &str = "https://horsey-web.badasswizard.boats/index.json";
 
 fn from_mod_server(url: &str) -> bool {
     // -test: zips come from the local test server only
@@ -515,7 +515,7 @@ fn from_mod_server(url: &str) -> bool {
         return true;
     }
     reqwest::Url::parse(url)
-        .map(|u| u.scheme() == "https" && u.host_str() == Some("mods.badasswizard.boats"))
+        .map(|u| u.scheme() == "https" && u.host_str() == Some("horsey-web.badasswizard.boats"))
         .unwrap_or(false)
 }
 
@@ -578,7 +578,7 @@ fn version_newer(a: &str, b: &str) -> bool {
 
 const INDEX_PUBLIC_KEY_HEX: &str =
     "58a9b3f690eff8f58a116e4bf309491790e8e8ee60034854a0beaed067c36f97";
-const INDEX_SIG_URL: &str = "https://mods.badasswizard.boats/index.sig";
+const INDEX_SIG_URL: &str = "https://horsey-web.badasswizard.boats/index.sig";
 
 // -test: the local test server (horsey-web, run-local.cmd) and its TEST key. the production key is never used here.
 const TEST_SERVER: &str = "http://localhost:5000";
@@ -613,7 +613,7 @@ fn index_key_hex() -> &'static str {
 }
 
 // bei jedem manager-release hochsetzen, dann lassen sich alte listen nicht mehr einspielen
-const MIN_INDEX_SEQUENCE: u64 = 21;
+const MIN_INDEX_SEQUENCE: u64 = 26;
 
 const MAX_DOWNLOAD_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_EXTRACT_BYTES: u64 = 200 * 1024 * 1024;
@@ -1617,9 +1617,9 @@ mod tests {
 
     #[test]
     fn download_host_must_be_https_mod_server() {
-        assert!(from_mod_server("https://mods.badasswizard.boats/files/autonamer-0.1.2.zip"));
-        assert!(!from_mod_server("http://mods.badasswizard.boats/files/autonamer-0.1.2.zip"));
-        assert!(!from_mod_server("https://mods.badasswizard.boats.example.com/files/a.zip"));
+        assert!(from_mod_server("https://horsey-web.badasswizard.boats/files/autonamer-0.1.2.zip"));
+        assert!(!from_mod_server("http://horsey-web.badasswizard.boats/files/autonamer-0.1.2.zip"));
+        assert!(!from_mod_server("https://horsey-web.badasswizard.boats.example.com/files/a.zip"));
         assert!(!from_mod_server("https://example.com/files/a.zip"));
         assert!(!from_mod_server("not a url"));
     }
